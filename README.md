@@ -1,3 +1,6 @@
+> [!CAUTION]
+> Work in progress. Not officially supported by Skyflow or Snowflake. Consider this alpha software which may have issues.
+
 # Skyflow Native App
 
 This project contains the source for a Snowflake Native App that supports detokenization of tokens present in Snowflake using a UDF.
