@@ -116,7 +116,8 @@ def skyflowDetokenize(vault_url, token):
             response.raise_for_status()
 
             response_as_json = sjson.loads(response.text)
-            output.append(response_as_json["records"][0]["value"])
+            for record in response_as_json['records']:
+                output.append(record['value'])
 
         except requests.exceptions.HTTPError as error:
             return (f"A HTTP error occurred while performing detokenize: {error}")
