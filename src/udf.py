@@ -120,7 +120,8 @@ def skyflowDetokenize(vault_url, token):
                 output.append(record['value'])
 
         except requests.exceptions.HTTPError as error:
-            return (f"A HTTP error occurred while performing detokenize: {error}")
+            return (
+                f"A HTTP error occurred while performing detokenize: {error}")
 
         except Exception as error:
             return (f"An error occurred while performing detokenize: {error}")
