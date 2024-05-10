@@ -1,4 +1,4 @@
-# Skyflow fro Snowflake Setup Instructions
+# Skyflow for Snowflake Setup Instructions
 
 This is a demo script for Skyflow. Please ensure the Skyflow Setup worksheet has been completed before running this script.
 
