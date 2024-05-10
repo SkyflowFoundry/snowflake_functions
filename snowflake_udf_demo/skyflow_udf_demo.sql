@@ -27,11 +27,11 @@ WHERE EMPLOYMENT_START_DATE > '2010';
 
 -- Step 4: Make some updates to the data
 DELETE FROM DOCTORS_DEMO WHERE DOCTOR_ID = 1 OR DOCTOR_ID = 2; -- Delete a few records
-UPDATE DOCTORS_DEMO SET NAME = 'New Name', PHONE = '212-555-5555' WHERE DOCTOR_ID = 3; -- Update a record
+UPDATE DOCTORS_DEMO SET NAME = 'New Name', PHONE = '555-111-5555' WHERE DOCTOR_ID = 3; -- Update a record
 INSERT INTO DOCTORS_DEMO VALUES -- Insert a few new records
-    (101, 'John Smith', 'john@example.com', '718-444-5555', '123 Fake Street NY NY 10019', 'Cardiology', '2020-01-01'),
-    (102, 'Harry Truman', 'harry@example.com', '718-333-5555', '234 Fake Street NY NY 10019', 'Podiatry', '2023-01-01'),
-    (103, 'Sally Field', 'sally@exmaple.com', '718-222-5555', '345 Fake Street NY NY 10019', 'Surgeon', '2022-01-01');
+    (101, 'John Smith', 'john@example.com', '555-222-5555', '123 Fake Street NY NY 10019', 'Cardiology', '2020-01-01'),
+    (102, 'Harry Truman', 'harry@example.com', '555-333-5555', '234 Fake Street NY NY 10019', 'Podiatry', '2023-01-01'),
+    (103, 'Sally Field', 'sally@exmaple.com', '555-444-5555', '345 Fake Street NY NY 10019', 'Surgeon', '2022-01-01');
 
 -- Step 5: Check on data in snowflake table
 SELECT * FROM DOCTORS_DEMO;
