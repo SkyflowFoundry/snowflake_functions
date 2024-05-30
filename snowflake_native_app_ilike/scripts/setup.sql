@@ -15,12 +15,12 @@ CREATE OR REPLACE PROCEDURE code_schema.init_app(config variant)
 
 GRANT USAGE ON PROCEDURE code_schema.init_app(variant) TO APPLICATION ROLE app_public;
 
-CREATE OR REPLACE FUNCTION code_schema.skyflowSearch(vault_url string, table_name string, column_name string, name_to_search string)
+CREATE OR REPLACE FUNCTION code_schema.skyflow_search(vault_url string, table_name string, column_name string, name_to_search string)
   RETURNS string
   LANGUAGE python
   runtime_version = '3.8'
   packages = ('snowflake-snowpark-python', 'pyjwt', 'cryptography', 'requests', 'simplejson')
   imports = ('/src/udf.py')
-  handler = 'udf.skyflowSearch';
+  handler = 'udf.skyflow_search';
 
-GRANT USAGE ON FUNCTION code_schema.skyflowSearch(string, string, string, string) TO APPLICATION ROLE app_public;
+GRANT USAGE ON FUNCTION code_schema.skyflow_search(string, string, string, string) TO APPLICATION ROLE app_public;
