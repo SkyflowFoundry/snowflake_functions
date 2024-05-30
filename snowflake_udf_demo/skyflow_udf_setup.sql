@@ -124,14 +124,14 @@ INSERT INTO CUSTOMERS (CUSTOMER_ID, NAME, EMAIL, PHONE, ADDRESS, LIFETIME_PURCHA
 -- Step 6: Store Skyflow service account key with Snowflake Secrets Manager, pasting in the contents of the credentials.json file into the SECRET_STRING variable.
 CREATE OR REPLACE SECRET SKYFLOW_VAULT_SECRET
     TYPE = GENERIC_STRING
-    SECRET_STRING = '<TODO: SERVICE_ACCOUNT_CREDENTIALS_JSON>';
+    SECRET_STRING = '<TODO: SERVICE_ACCOUNT_CREDENTIALS>';
 
     
 -- Step 5: Create the external networking rules to enable Snowflake to access Skyflow
 CREATE OR REPLACE NETWORK RULE SKYFLOW_APIS_NETWORK_RULE -- Grant access to the Skyflow API endpoints for authentication and vault APIs
  MODE = EGRESS
  TYPE = HOST_PORT
- VALUE_LIST = ('<TODO: VAULT_URL>', 'manage.skyflowapis.com');
+ VALUE_LIST = ('ebfc9bee4242.vault.skyflowapis.com', 'manage.skyflowapis.com');
  
 CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION SKYFLOW_EXTERNAL_ACCESS_INTEGRATION -- Create an integration using the network rule and secret
  ALLOWED_NETWORK_RULES = (SKYFLOW_APIS_NETWORK_RULE)
@@ -140,7 +140,7 @@ CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION SKYFLOW_EXTERNAL_ACCESS_INTEGRATIO
 
  
 -- Step 6: Create Stored Procedure for table tokenization. Skyflow table and column names should match the snowflake table and column names. Include PII columns only.
-CREATE OR REPLACE PROCEDURE SKYFLOW_TOKENIZE_TABLE(table_name VARCHAR)
+CREATE OR REPLACE PROCEDURE SKYFLOW_TOKENIZE_TABLE(vault_name VARCHAR, table_name VARCHAR, primary_key VARCHAR, pii_fields_delimited STRING, vault_owner_email VARCHAR)
 RETURNS STRING
 LANGUAGE PYTHON
 RUNTIME_VERSION = 3.8
@@ -155,6 +155,7 @@ import simplejson as json
 import jwt
 import requests 
 import time
+from urllib.parse import quote_plus
 
 def GENERATE_AUTH_TOKEN(session):
     credentials = json.loads(_snowflake.get_generic_secret_string('cred'), strict=False)
@@ -182,21 +183,245 @@ def GENERATE_AUTH_TOKEN(session):
     
     return auth["accessToken"]
 
-def SKYFLOW_TOKENIZE_TABLE(session, table_name, primary_key, pii_column_names):
+def GET_ACCOUNT_ID():
+    return "<TODO: ACCOUNT_ID>"
+
+def GET_WORKSPACE_ID(session, auth_token):
+    url = f"https://manage.skyflowapis.com/v1/workspaces"
+    headers = {
+        "Authorization": "Bearer " + auth_token,
+        "X-SKYFLOW-ACCOUNT-ID": GET_ACCOUNT_ID()
+    }
+
+    session = requests.Session()
+    response = session.get(url, headers=headers)
+    workspace_response = json.loads(response.text)
+    
+    return workspace_response["workspaces"][0]["ID"]  
+
+def GET_USER_ID_BY_EMAIL(session, auth_token, user_email):
+    encoded_email = quote_plus(user_email)
+    url = f"https://manage.skyflowapis.com/v1/users?filterOps.email={encoded_email}"
+    headers = {
+        "Authorization": "Bearer " + auth_token,
+        "X-SKYFLOW-ACCOUNT-ID": GET_ACCOUNT_ID()
+    }
+
+    session = requests.Session()
+    response = session.get(url, headers=headers)
+    user_response = json.loads(response.text)
+    
+    return user_response["users"][0]["ID"]   
+    
+def SKYFLOW_CREATE_VAULT(session, auth_token, vault_name, table_name, primary_key, pii_fields_delimited, vault_owner_email):
+    # Split the comma-separated fields into a list
+    pii_fields = pii_fields_delimited.split(',')
+    
+    # Initialize an list with skyflow_id and primary_key to start, pii fields will be appended
+    field_blocks = [
+                        {
+                            "name": "skyflow_id",
+                            "datatype": "DT_STRING",
+            "isArray": False,
+                            "tags": [
+                                {
+                                    "name": "skyflow.options.default_dlp_policy",
+                                    "values": [
+                                        "PLAIN_TEXT"
+                                    ]
+                                },
+                                {
+                                    "name": "skyflow.options.operation",
+                                    "values": [
+                                        "ALL_OP"
+                                    ]
+                                },
+                                {
+                                    "name": "skyflow.options.sensitivity",
+                                    "values": [
+                                        "LOW"
+                                    ]
+                                },
+                                {
+                                    "name": "skyflow.options.data_type",
+                                    "values": [
+                                        "skyflow.SkyflowID"
+                                    ]
+                                },
+                                {
+                                    "name": "skyflow.options.description",
+                                    "values": [
+                                        "Skyflow defined Primary Key"
+                                    ]
+                                },
+                                {
+                                    "name": "skyflow.options.display_name",
+                                    "values": [
+                                        "Skyflow ID"
+                                    ]
+                                }
+                            ],
+                            "index": 0
+                        },
+                        {
+            "name": primary_key.lower(),
+                            "datatype": "DT_INT32",
+            "isArray": False,
+                            "tags": [
+                                {
+                                    "name": "skyflow.options.default_dlp_policy",
+                                    "values": [
+                                        "PLAIN_TEXT"
+                                    ]
+                                },
+                                {
+                                    "name": "skyflow.options.operation",
+                                    "values": [
+                                        "ALL_OP"
+                                    ]
+                                },
+                                {
+                                    "name": "skyflow.options.unique",
+                                    "values": [
+                                        "true"
+                                    ]
+                                },
+                                {
+                                    "name": "skyflow.options.display_name",
+                                    "values": [
+                        primary_key.lower()
+                                    ]
+                                }
+                            ],
+                            "index": 0
+        }
+    ]
+    
+    # Loop over each field in the pii_fields list and create a field block
+    for field in pii_fields:
+        field_block = {
+            "name": field.lower(),
+                            "datatype": "DT_STRING",
+            "isArray": False,
+                            "tags": [
+                                {
+                                    "name": "skyflow.options.default_dlp_policy",
+                    "values": ["MASK"]
+                                },
+                                {
+                                    "name": "skyflow.options.operation",
+                    "values": ["ALL_OP"]
+                                },
+                                {
+                                    "name": "skyflow.options.default_token_policy",
+                    "values": ["DETERMINISTIC_FPT"]
+                                },
+                                {
+                                    "name": "skyflow.options.index",
+                    "values": ["true"]
+                                },
+                                {
+                                    "name": "skyflow.options.configuration_tags",
+                    "values": ["NULLABLE"]
+                                },
+                                {
+                                    "name": "skyflow.options.display_name",
+                    "values": [field.lower()]
+                                }
+                            ],
+                            "index": 0
+                        }
+        field_blocks.append(field_block)
+    
+    url = "https://manage.skyflowapis.com/v1/vaults"
+    headers = {
+        "Authorization": "Bearer " + auth_token,
+        "X-SKYFLOW-ACCOUNT-ID": GET_ACCOUNT_ID()
+    }
+    body = {
+        "name": vault_name,
+        "description": "A vault for Snowflake PII",
+        "vaultSchema": {
+            "schemas": [
+                {
+                    "name": table_name,
+                    "fields": field_blocks,
+                    "childrenSchemas": [],
+                    "schemaTags": []
+                }
+            ],
+            "tags": [
+                {
+                    "name": "skyflow.options.experimental",
+                    "values": [
+                        "true"
+                    ]
+                },
+                {
+                    "name": "skyflow.options.vault_main_object",
+                    "values": [
+                        "Quickstart"
+                    ]
+                },
+                {
+                    "name": "skyflow.options.query_interface",
+                    "values": [
+                        "REST",
+                        "SQL"
+                    ]
+                },
+                {
+                    "name": "skyflow.options.env_name",
+                    "values": [
+                        "ALL_ENV"
+                    ]
+                },
+                {
+                    "name": "skyflow.options.display_name",
+                    "values": [
+                        "Quickstart"
+                    ]
+                }
+            ]
+        },
+        "workspaceID": GET_WORKSPACE_ID(session, auth_token),
+        "owners": [
+            {
+                "ID": GET_USER_ID_BY_EMAIL(session, auth_token, vault_owner_email),
+                "type": "USER"
+            },
+            {
+                "ID": "<TODO: SERVICE_ACCOUNT_ID>",
+                "type": "SERVICE_ACCOUNT"
+            }
+        ]
+    }
+    session = requests.Session()
+    response = session.post(url, json=body, headers=headers)
+    vault_response = json.loads(response.text)
+    
+    return vault_response["ID"]
+
+def SKYFLOW_TOKENIZE_TABLE(session, vault_name, table_name, primary_key, pii_fields_delimited, vault_owner_email):
     auth_token = GENERATE_AUTH_TOKEN(session)
+    vault_id = SKYFLOW_CREATE_VAULT(session, auth_token, vault_name, table_name, primary_key, pii_fields_delimited, vault_owner_email)
+
+    # Convert the comma-separated list of PII fields into a list
+    pii_columns = pii_fields_delimited.split(',')
+    pii_columns.append(primary_key)    
     
     # Fetch data from the Snowflake table
     df = session.table(table_name)
     all_records = df.collect()
-    batch_size = 100
+    batch_size = 25
 
     http_session = requests.Session()
     
-    # Split records into batches of 100
+    # Split records into batches of 25
     batches = [all_records[i:i + batch_size] for i in range(0, len(all_records), batch_size)]
 
     # Initialize dictionaries to store CASE expressions for each field
-    case_expressions = {column: [] for column in column_names}
+    case_expressions = {column.lower(): [] for column in pii_columns}
     update_ids = []
 
     # Define a function to execute the update statement
@@ -211,7 +436,7 @@ def SKYFLOW_TOKENIZE_TABLE(session, table_name, primary_key, pii_column_names):
         for row_index, row in enumerate(batch):
             # Construct the record with the specific fields
             record = {
-                "fields": {column: row[column] for column in column_names}
+                "fields": {column: row[column] for column in pii_columns}
             }
             records.append(record)
             # Add the plaintext primary_key to the list for WHERE clause matching
@@ -222,7 +447,7 @@ def SKYFLOW_TOKENIZE_TABLE(session, table_name, primary_key, pii_column_names):
             "tokenization": True
         }
 
-        url = "https://<TODO: VAULT_URL>/v1/vaults/<TODO: VAULT_ID>/" + table_name
+        url = f"https://ebfc9bee4242.vault.skyflowapis.com/v1/vaults/{vault_id}/" + table_name
         headers = {
             "Authorization": "Bearer " + auth_token
         }
@@ -258,8 +483,9 @@ def SKYFLOW_TOKENIZE_TABLE(session, table_name, primary_key, pii_column_names):
             sql_command = f"UPDATE {table_name} SET {field} = CASE {primary_key} {' '.join(case_expressions[field])} END"
             execute_update(sql_command, update_ids)
 
-    session.sql(f"CREATE OR REPLACE STREAM SKYFLOW_PII_STREAM_{table_name} ON TABLE SKYFLOW_DEMO.PUBLIC.{table_name}").collect()
-    session.sql(f"CREATE OR REPLACE TASK SKYFLOW_PII_STREAM_{table_name}_TASK WAREHOUSE = 'COMPUTE_WH' SCHEDULE = '1 MINUTE' WHEN SYSTEM$STREAM_HAS_DATA('SKYFLOW_PII_STREAM_{table_name}') AS CALL SKYFLOW_PROCESS_PII('{table_name}, {primary_key}, {pii_column_names}')").collect()
+    # Create or replace the stream and task for continuous tokenization
+    session.sql(f"CREATE OR REPLACE STREAM SKYFLOW_PII_STREAM_{table_name} ON TABLE {table_name}").collect()
+    session.sql(f"CREATE OR REPLACE TASK SKYFLOW_PII_STREAM_{table_name}_TASK WAREHOUSE = 'COMPUTE_WH' SCHEDULE = '1 MINUTE' WHEN SYSTEM$STREAM_HAS_DATA('SKYFLOW_PII_STREAM_{table_name}') AS CALL SKYFLOW_PROCESS_PII('{vault_id}', '{table_name}', '{primary_key}', '{pii_fields_delimited}')").collect()
     session.sql(f"ALTER TASK SKYFLOW_PII_STREAM_{table_name}_TASK RESUME").collect()
 
     return "Tokenization completed successfully"
@@ -331,9 +557,41 @@ def GENERATE_AUTH_TOKEN():
     
     return auth["accessToken"]
 
+def GET_ACCOUNT_ID():
+    return "<TODO: ACCOUNT_ID>"
+
+    
+def GET_WORKSPACE_ID(session, auth_token):
+    url = f"https://manage.skyflowapis.com/v1/workspaces"
+    headers = {
+        "Authorization": "Bearer " + auth_token,
+        "X-SKYFLOW-ACCOUNT-ID": GET_ACCOUNT_ID()
+    }
+
+    session = requests.Session()
+    response = session.get(url, headers=headers)
+    workspace_response = json.loads(response.text)
+    
+    return workspace_response["workspaces"][0]["ID"]  
+    
+def GET_VAULT_ID_BY_NAME(session, auth_token, vault_name):
+    workspace_id = GET_WORKSPACE_ID(session, auth_token)
+    url = f"https://manage.skyflowapis.com/v1/vaults?filterOps.name={vault_name}&workspaceID={workspace_id}"
+    headers = {
+        "Authorization": "Bearer " + auth_token,
+        "X-SKYFLOW-ACCOUNT-ID": GET_ACCOUNT_ID()
+    }
+
+    session = requests.Session()
+    response = session.get(url, headers=headers)
+    vault_response = json.loads(response.text)
+    
+    return vault_response["vaults"][0]["ID"]   
+
 @vectorized(input=pandas.DataFrame, max_batch_size=100)
 def SKYFLOW_DETOKENIZE(token_df):
     auth_token = GENERATE_AUTH_TOKEN()
+    vault_id = GET_VAULT_ID_BY_NAME(session, auth_token, 'SkyflowVault')
 
     # Convert the DataFrame Series into the token format needed for the detokenize call.
     token_values = token_df[0].apply(lambda x: {'token': x, 'redaction': 'PLAIN_TEXT'}).tolist()
@@ -341,7 +599,7 @@ def SKYFLOW_DETOKENIZE(token_df):
         'detokenizationParameters': token_values
     }
 
-    url = 'https://<TODO: VAULT_URL>/v1/vaults/<TODO: VAULT_ID>/detokenize'
+    url = f"https://ebfc9bee4242.vault.skyflowapis.com/v1/vaults/{vault_id}/detokenize"
     headers = { 'Authorization': 'Bearer ' + auth_token }
 
     # Use the persistent session to send the request
@@ -367,7 +625,7 @@ def SKYFLOW_DETOKENIZE(token_df):
 $$;
 
 -- Step 8: Create a function for processing PII updates from a snowflake stream
-CREATE OR REPLACE PROCEDURE SKYFLOW_PROCESS_PII(table_name VARCHAR)
+CREATE OR REPLACE PROCEDURE SKYFLOW_PROCESS_PII(vault_id VARCHAR, table_name VARCHAR, primary_key VARCHAR, pii_fields STRING)
 RETURNS STRING
 LANGUAGE PYTHON
 RUNTIME_VERSION = 3.8
@@ -409,18 +667,26 @@ def GENERATE_AUTH_TOKEN(session):
     
     return auth["accessToken"]
 
-def SKYFLOW_PROCESS_PII(session, table_name, column_names, primary_key):
+def GET_ACCOUNT_ID():
+    return "<TODO: ACCOUNT_ID>"
+
+def SKYFLOW_PROCESS_PII(session, vault_id, table_name, primary_key, pii_fields):
     # Load credentials and generate auth token
     credentials = json.loads(_snowflake.get_generic_secret_string('cred'), strict=False)
     auth_token = GENERATE_AUTH_TOKEN(credentials)
 
+    # Convert primary_key and pii_fields to uppercase
+    primary_key = primary_key.upper()
+    pii_fields_list = [field.strip().upper() for field in pii_fields.split(',')]
+    pii_fields_list.append(primary_key)
+
     # Skyflow static variables
     table_name_skyflow = table_name.lower()
-    skyflow_account_id = '<TODO: ACCOUNT_ID>'
-    skyflow_url_vault = 'https://<TODO: VAULT_URL>/v1/vaults/<TODO: VAULT_ID>/'
+    skyflow_account_id = GET_ACCOUNT_ID()
+    skyflow_url_vault = f"https://ebfc9bee4242.vault.skyflowapis.com/v1/vaults/{vault_id}/"
 
     # Retrieve all stream records
-    stream_records = session.sql(f"SELECT {primary_key}, METADATA$ACTION, {', '.join(column_names)} FROM SKYFLOW_PII_STREAM_{table_name}").collect()
+    stream_records = session.sql(f"SELECT {primary_key}, METADATA$ACTION, {', '.join(pii_fields_list)} FROM SKYFLOW_PII_STREAM_{table_name}").collect()
 
     # Initialize lists for different actions
     primary_keys_to_delete = []
@@ -446,9 +712,10 @@ def SKYFLOW_PROCESS_PII(session, table_name, column_names, primary_key):
                 'Authorization': f'Bearer {auth_token}'
             },
             params={
-                'column_name': primary_key,
+                'column_name': primary_key.lower(),
                 'column_values': primary_keys_to_delete,
-                'fields': 'skyflow_id'
+                'fields': 'skyflow_id',
+                'redaction': 'PLAIN_TEXT'
             }
         )
         response.raise_for_status()
@@ -471,12 +738,12 @@ def SKYFLOW_PROCESS_PII(session, table_name, column_names, primary_key):
 
     # Process INSERT actions
     if records_to_insert: 
-        batch_size = 100
-        # Split records into batches of 100
+        batch_size = 25
+        # Split records into batches of 25
         batches = [records_to_insert[i:i + batch_size] for i in range(0, len(records_to_insert), batch_size)]
 
         # Initialize dictionaries to store CASE expressions for each field
-        case_expressions = {column: [] for column in column_names}
+        case_expressions = {column: [] for column in pii_fields_list}
         update_ids = []
 
         # Define a function to execute the update statement
@@ -491,7 +758,9 @@ def SKYFLOW_PROCESS_PII(session, table_name, column_names, primary_key):
             for row_index, row in enumerate(batch):
                 # Construct the record with the specific fields
                 record = {
-                    "fields": {column: row[column] for column in column_names}
+                    "fields": {
+                        column: row[column.upper()] if column.upper() in row else None for column in pii_fields_list
+                    }
                 }
                 records.append(record)
                 # Add the plaintext primary_key to the list for WHERE clause matching
@@ -518,6 +787,7 @@ def SKYFLOW_PROCESS_PII(session, table_name, column_names, primary_key):
                     id_index = batch_index * batch_size + i
                     primary_key_value = update_ids[id_index]
                     for field, token in record["tokens"].items():
+                        field = field.upper()
                         case_expression = f"WHEN '{primary_key_value}' THEN '{token}'"
                         case_expressions[field].append(case_expression)
                         

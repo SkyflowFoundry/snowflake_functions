@@ -4,6 +4,17 @@ This is a demo script for Skyflow. Please ensure the Skyflow Setup worksheet has
 
 ## Steps
 
+1. Create an account-level Service account with Account Admin role
+2. Overwrite the credentials.json template in this repo directory with the credentials.json file downloaded from service account creation
+3. Paste your account id into vault_details.cfg
+4. In a terminal, navigate to this snowflake_udf_demo folder and run 'python script_setup.py' or 'python3 script_setup.py' (depending on your python version)
+5. Import all three .sql files into Snowflake as Worksheets
+6. Run the entire skyflow_udf_setup.sql worksheet end to end
+7. Run the skyflow_udf_demo.sql worksheet line by line. Prior to running the tokenize table step, update the last parameter with your email address. Note that this email address must correspond to an existing Skyflow Studio user in the relevant account.
+8. Upon running tokenize table step, there will be a new vault and table in skyflow. Continue through the demo steps accordingly.
+
+
+-----Below is Deprecated-----
 ***Setup Demo***
 
 1. **In Skyflow, [create a vault](https://docs.skyflow.com/create-a-vault/).**
