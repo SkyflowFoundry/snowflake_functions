@@ -40,7 +40,7 @@ def get_signed_jwt(credentials):
 
 @cached(cache=TTLCache(maxsize=1024, ttl=3600))
 def get_bearer_token(credentials_hashable):
-    credentials = dict(credentials_hashable) 
+    credentials = dict(credentials_hashable)
 
     # Get signed jwt
     signed_jwt = get_signed_jwt(credentials)
