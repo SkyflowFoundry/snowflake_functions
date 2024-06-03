@@ -18,8 +18,8 @@ CREATE OR REPLACE TABLE SKYFLOW_DEMO.PUBLIC.CUSTOMERS (
 -- Step 4: Insert sample records into table
 INSERT INTO CUSTOMERS (CUSTOMER_ID, NAME, EMAIL, PHONE, ADDRESS, LIFETIME_PURCHASE_AMOUNT, CUSTOMER_SINCE) VALUES
     (1,'Mr Emily Williams','Mr.emily.williams@example.com','+1 555-628-8461','546 Maple St Chicago CA 51610','$100.30','2006-01-10'),
-    (2,'Mr Anna Jones','Mr.anna.jones@example.com','+1 555-520-7701','595 Pine St Phoenix IL 49184','$2350.00','2010-02-27'),
-    (3,'Mr Anna Williams','Mr.anna.williams@example.com','+1 555-683-9434','610 Maple St Chicago NY 27393','$10000.50','2014-01-05'),
+    (2,'Mr Anna Jones','Mr.anna.jones@example.com','+1 555-628-8461','546 Maple St Chicago CA 51610','$2350.00','2010-02-27'),
+    (3,'Mr Anna Williams','Mr.anna.williams@example.com','+1 555-628-8461','546 Maple St Chicago CA 51610','$10000.50','2014-01-05'),
     (4,'Mr Michael Williams','Mr.michael.williams@example.com','+1 555-860-5835','114 Maple St Chicago TX 20094','$2350.00','2022-06-12'),
     (5,'Mr John Smith','Mr.john.smith@example.com','+1 555-949-7779','631 Pine St Houston IL 14847','$10000.50','2005-08-06'),
     (6,'Mr John Johnson','Mr.john.johnson@example.com','+1 555-607-2361','931 Birch St Chicago CA 83399','$0.00','2021-05-14'),
@@ -205,20 +205,19 @@ def GENERATE_AUTH_TOKEN():
 def GET_ACCOUNT_ID():
     return "<TODO: ACCOUNT_ID>"
 
-def GET_WORKSPACE_ID(session, auth_token):
+def GET_WORKSPACE_ID(auth_token):
     url = f"https://manage.skyflowapis.com/v1/workspaces"
     headers = {
         "Authorization": "Bearer " + auth_token,
         "X-SKYFLOW-ACCOUNT-ID": GET_ACCOUNT_ID()
     }
 
-    session = requests.Session()
     response = session.get(url, headers=headers)
     workspace_response = json.loads(response.text)
     
     return workspace_response["workspaces"][0]["ID"]  
 
-def GET_USER_ID_BY_EMAIL(session, auth_token, user_email):
+def GET_USER_ID_BY_EMAIL(auth_token, user_email):
     encoded_email = quote_plus(user_email)
     url = f"https://manage.skyflowapis.com/v1/users?filterOps.email={encoded_email}"
     headers = {
@@ -226,13 +225,12 @@ def GET_USER_ID_BY_EMAIL(session, auth_token, user_email):
         "X-SKYFLOW-ACCOUNT-ID": GET_ACCOUNT_ID()
     }
 
-    session = requests.Session()
     response = session.get(url, headers=headers)
     user_response = json.loads(response.text)
     
     return user_response["users"][0]["ID"]   
     
-def SKYFLOW_CREATE_VAULT(session, auth_token, vault_name, table_name, primary_key, pii_fields_delimited, vault_owner_email):
+def SKYFLOW_CREATE_VAULT(auth_token, vault_name, table_name, primary_key, pii_fields_delimited, vault_owner_email):
     # Split the comma-separated fields into a list
     pii_fields = pii_fields_delimited.split(',')
     
@@ -403,10 +401,10 @@ def SKYFLOW_CREATE_VAULT(session, auth_token, vault_name, table_name, primary_ke
                 }
             ]
         },
-        "workspaceID": GET_WORKSPACE_ID(session, auth_token),
+        "workspaceID": GET_WORKSPACE_ID(auth_token),
         "owners": [
             {
-                "ID": GET_USER_ID_BY_EMAIL(session, auth_token, vault_owner_email),
+                "ID": GET_USER_ID_BY_EMAIL(auth_token, vault_owner_email),
                 "type": "USER"
             },
             {
@@ -415,26 +413,23 @@ def SKYFLOW_CREATE_VAULT(session, auth_token, vault_name, table_name, primary_ke
             }
         ]
     }
-    session = requests.Session()
     response = session.post(url, json=body, headers=headers)
     vault_response = json.loads(response.text)
     
     return vault_response["ID"]
 
-def SKYFLOW_TOKENIZE_TABLE(session, vault_name, table_name, primary_key, pii_fields_delimited, vault_owner_email):
+def SKYFLOW_TOKENIZE_TABLE(snowflake_session, vault_name, table_name, primary_key, pii_fields_delimited, vault_owner_email):
     auth_token = GENERATE_AUTH_TOKEN()
-    vault_id = SKYFLOW_CREATE_VAULT(session, auth_token, vault_name, table_name, primary_key, pii_fields_delimited, vault_owner_email)
+    vault_id = SKYFLOW_CREATE_VAULT(auth_token, vault_name, table_name, primary_key, pii_fields_delimited, vault_owner_email)
 
     # Convert the comma-separated list of PII fields into a list
     pii_columns = pii_fields_delimited.split(',')
     pii_columns.append(primary_key)    
     
     # Fetch data from the Snowflake table
-    df = session.table(table_name)
+    df = snowflake_session.table(table_name)
     all_records = df.collect()
     batch_size = 25
-
-    http_session = requests.Session()
     
     # Split records into batches of 25
     batches = [all_records[i:i + batch_size] for i in range(0, len(all_records), batch_size)]
@@ -448,7 +443,7 @@ def SKYFLOW_TOKENIZE_TABLE(session, vault_name, table_name, primary_key, pii_fie
         # Construct the final UPDATE statement with CASE expressions for each field
         sql_command += f" WHERE {primary_key} IN ({', '.join(update_ids_subset)})"
         # Execute the UPDATE statement
-        session.sql(sql_command).collect()
+        snowflake_session.sql(sql_command).collect()
 
     for batch_index, batch in enumerate(batches):
         records = []
@@ -471,7 +466,7 @@ def SKYFLOW_TOKENIZE_TABLE(session, vault_name, table_name, primary_key, pii_fie
             "Authorization": "Bearer " + auth_token
         }
         
-        response = http_session.post(url, json=body, headers=headers)
+        response = session.post(url, json=body, headers=headers)
         response_as_json = response.json()
         
         # Check if 'records' key exists in the response
@@ -503,9 +498,9 @@ def SKYFLOW_TOKENIZE_TABLE(session, vault_name, table_name, primary_key, pii_fie
             execute_update(sql_command, update_ids)
 
     # Create or replace the stream and task for continuous tokenization
-    session.sql(f"CREATE OR REPLACE STREAM SKYFLOW_PII_STREAM_{table_name} ON TABLE {table_name}").collect()
-    session.sql(f"CREATE OR REPLACE TASK SKYFLOW_PII_STREAM_{table_name}_TASK WAREHOUSE = 'COMPUTE_WH' SCHEDULE = '1 MINUTE' WHEN SYSTEM$STREAM_HAS_DATA('SKYFLOW_PII_STREAM_{table_name}') AS CALL SKYFLOW_PROCESS_PII('{vault_id}', '{table_name}', '{primary_key}', '{pii_fields_delimited}')").collect()
-    session.sql(f"ALTER TASK SKYFLOW_PII_STREAM_{table_name}_TASK RESUME").collect()
+    snowflake_session.sql(f"CREATE OR REPLACE STREAM SKYFLOW_PII_STREAM_{table_name} ON TABLE {table_name}").collect()
+    snowflake_session.sql(f"CREATE OR REPLACE TASK SKYFLOW_PII_STREAM_{table_name}_TASK WAREHOUSE = 'COMPUTE_WH' SCHEDULE = '1 MINUTE' WHEN SYSTEM$STREAM_HAS_DATA('SKYFLOW_PII_STREAM_{table_name}') AS CALL SKYFLOW_PROCESS_PII('{vault_id}', '{table_name}', '{primary_key}', '{pii_fields_delimited}')").collect()
+    snowflake_session.sql(f"ALTER TASK SKYFLOW_PII_STREAM_{table_name}_TASK RESUME").collect()
 
     return "Tokenization completed successfully"
 
@@ -580,28 +575,26 @@ def GET_ACCOUNT_ID():
     return "<TODO: ACCOUNT_ID>"
 
     
-def GET_WORKSPACE_ID(session, auth_token):
+def GET_WORKSPACE_ID(auth_token):
     url = f"https://manage.skyflowapis.com/v1/workspaces"
     headers = {
         "Authorization": "Bearer " + auth_token,
         "X-SKYFLOW-ACCOUNT-ID": GET_ACCOUNT_ID()
     }
 
-    session = requests.Session()
     response = session.get(url, headers=headers)
     workspace_response = json.loads(response.text)
     
     return workspace_response["workspaces"][0]["ID"]  
     
-def GET_VAULT_ID_BY_NAME(session, auth_token, vault_name):
-    workspace_id = GET_WORKSPACE_ID(session, auth_token)
+def GET_VAULT_ID_BY_NAME(auth_token, vault_name):
+    workspace_id = GET_WORKSPACE_ID(auth_token)
     url = f"https://manage.skyflowapis.com/v1/vaults?filterOps.name={vault_name}&workspaceID={workspace_id}"
     headers = {
         "Authorization": "Bearer " + auth_token,
         "X-SKYFLOW-ACCOUNT-ID": GET_ACCOUNT_ID()
     }
 
-    session = requests.Session()
     response = session.get(url, headers=headers)
     vault_response = json.loads(response.text)
     
@@ -610,7 +603,7 @@ def GET_VAULT_ID_BY_NAME(session, auth_token, vault_name):
 @vectorized(input=pandas.DataFrame, max_batch_size=25)
 def SKYFLOW_DETOKENIZE(token_df):
     auth_token = GENERATE_AUTH_TOKEN()
-    vault_id = GET_VAULT_ID_BY_NAME(session, auth_token, 'SkyflowVault')
+    vault_id = GET_VAULT_ID_BY_NAME(auth_token, 'SkyflowVault')
 
     # Convert the DataFrame Series into the token format needed for the detokenize call.
     token_values = token_df[0].apply(lambda x: {'token': x, 'redaction': 'PLAIN_TEXT'}).tolist()
@@ -708,7 +701,7 @@ def GENERATE_AUTH_TOKEN():
 def GET_ACCOUNT_ID():
     return "hd873b584c194159a38f1fb0ed18bbee"
 
-def SKYFLOW_PROCESS_PII(session, vault_id, table_name, primary_key, pii_fields):
+def SKYFLOW_PROCESS_PII(snowflake_session, vault_id, table_name, primary_key, pii_fields):
     # Load credentials and generate auth token
     credentials = json.loads(_snowflake.get_generic_secret_string('cred'), strict=False)
     auth_token = GENERATE_AUTH_TOKEN()
@@ -724,7 +717,7 @@ def SKYFLOW_PROCESS_PII(session, vault_id, table_name, primary_key, pii_fields):
     skyflow_url_vault = f"https://ebfc9bee4242.vault.skyflowapis.com/v1/vaults/{vault_id}/"
 
     # Retrieve all stream records
-    stream_records = session.sql(f"SELECT {primary_key}, METADATA$ACTION, {', '.join(pii_fields_list)} FROM SKYFLOW_PII_STREAM_{table_name}").collect()
+    stream_records = snowflake_session.sql(f"SELECT {primary_key}, METADATA$ACTION, {', '.join(pii_fields_list)} FROM SKYFLOW_PII_STREAM_{table_name}").collect()
 
     # Initialize lists for different actions
     primary_keys_to_delete = []
@@ -789,7 +782,7 @@ def SKYFLOW_PROCESS_PII(session, vault_id, table_name, primary_key, pii_fields):
             # Construct the final UPDATE statement with CASE expressions for each field
             sql_command += f" WHERE {primary_key} IN ({', '.join(update_ids_subset)})"
             # Execute the UPDATE statement
-            session.sql(sql_command).collect()
+            snowflake_session.sql(sql_command).collect()
 
         for batch_index, batch in enumerate(batches):
             records = []
@@ -846,7 +839,7 @@ def SKYFLOW_PROCESS_PII(session, vault_id, table_name, primary_key, pii_fields):
                 sql_command = f"UPDATE {table_name} SET {field} = CASE {primary_key} {' '.join(case_expressions[field])} END"
                 execute_update(sql_command, update_ids)
 
-    session.sql(f'CREATE OR REPLACE STREAM SKYFLOW_PII_STREAM_{table_name} ON TABLE SKYFLOW_DEMO.PUBLIC.{table_name}').collect()
+    snowflake_session.sql(f'CREATE OR REPLACE STREAM SKYFLOW_PII_STREAM_{table_name} ON TABLE SKYFLOW_DEMO.PUBLIC.{table_name}').collect()
     return "Changes processed"
 
 $$;
