@@ -155,12 +155,29 @@ import simplejson as json
 import jwt
 import requests 
 import time
+import logging
 from urllib.parse import quote_plus
 
-def GENERATE_AUTH_TOKEN(session):
-    credentials = json.loads(_snowflake.get_generic_secret_string('cred'), strict=False)
+# Initialize a session object at the global scope
+session = requests.Session()
+
+logger = logging.getLogger("python_logger")
+logger.setLevel(logging.INFO)
+logger.info("Logging from SKYFLOW_TOKENIZE_TABLE Python module.")
+
+# Global cache for storing the auth token and its expiry time
+AUTH_TOKEN_CACHE = {
+    'token': None,
+    'expiry': None
+}
+
+def GENERATE_AUTH_TOKEN():
+    # Check if a valid token is already in the cache
+    if AUTH_TOKEN_CACHE['token'] and AUTH_TOKEN_CACHE['expiry'] > time.time():
+        return AUTH_TOKEN_CACHE['token']
     
-    # Create the claims object with the data in the creds object
+    # Existing code to generate a new token
+    credentials = json.loads(_snowflake.get_generic_secret_string('cred'), strict=False)
     claims = {
        "iss": credentials["clientID"],
        "key": credentials["keyID"], 
@@ -168,18 +185,20 @@ def GENERATE_AUTH_TOKEN(session):
        "exp": int(time.time()) + (3600), # JWT expires in Now + 60 minutes
        "sub": credentials["clientID"], 
     }
-    # Sign the claims object with the private key contained in the creds object
     signedJWT = jwt.encode(claims, credentials["privateKey"], algorithm='RS256')
-
     body = {
        'grant_type': 'urn:ietf:params:oauth:grant-type:jwt-bearer',
        'assertion': signedJWT,
     }
     tokenURI = credentials["tokenURI"]
 
-    session = requests.Session()
+    # Use the persistent session to send the request
     r = session.post(tokenURI, json=body)
     auth = json.loads(r.text)
+    
+    # Store the new token and its expiry time in the cache
+    AUTH_TOKEN_CACHE['token'] = auth["accessToken"]
+    AUTH_TOKEN_CACHE['expiry'] = time.time() + (3600) # Assuming the token expires in 1 hour
     
     return auth["accessToken"]
 
@@ -403,7 +422,7 @@ def SKYFLOW_CREATE_VAULT(session, auth_token, vault_name, table_name, primary_ke
     return vault_response["ID"]
 
 def SKYFLOW_TOKENIZE_TABLE(session, vault_name, table_name, primary_key, pii_fields_delimited, vault_owner_email):
-    auth_token = GENERATE_AUTH_TOKEN(session)
+    auth_token = GENERATE_AUTH_TOKEN()
     vault_id = SKYFLOW_CREATE_VAULT(session, auth_token, vault_name, table_name, primary_key, pii_fields_delimited, vault_owner_email)
 
     # Convert the comma-separated list of PII fields into a list
@@ -639,12 +658,29 @@ import _snowflake
 import simplejson as json
 import jwt
 import requests 
+import logging
 import time
 
-def GENERATE_AUTH_TOKEN(session):
-    credentials = json.loads(_snowflake.get_generic_secret_string('cred'), strict=False)
+# Initialize a session object at the global scope
+session = requests.Session()
+
+logger = logging.getLogger("python_logger")
+logger.setLevel(logging.INFO)
+logger.info("Logging from SKYFLOW_PROCESS_PII Python module.")
+
+# Global cache for storing the auth token and its expiry time
+AUTH_TOKEN_CACHE = {
+    'token': None,
+    'expiry': None
+}
+
+def GENERATE_AUTH_TOKEN():
+    # Check if a valid token is already in the cache
+    if AUTH_TOKEN_CACHE['token'] and AUTH_TOKEN_CACHE['expiry'] > time.time():
+        return AUTH_TOKEN_CACHE['token']
     
-    # Create the claims object with the data in the creds object
+    # Existing code to generate a new token
+    credentials = json.loads(_snowflake.get_generic_secret_string('cred'), strict=False)
     claims = {
        "iss": credentials["clientID"],
        "key": credentials["keyID"], 
@@ -652,18 +688,20 @@ def GENERATE_AUTH_TOKEN(session):
        "exp": int(time.time()) + (3600), # JWT expires in Now + 60 minutes
        "sub": credentials["clientID"], 
     }
-    # Sign the claims object with the private key contained in the creds object
     signedJWT = jwt.encode(claims, credentials["privateKey"], algorithm='RS256')
-
     body = {
        'grant_type': 'urn:ietf:params:oauth:grant-type:jwt-bearer',
        'assertion': signedJWT,
     }
     tokenURI = credentials["tokenURI"]
 
-    session = requests.Session()
+    # Use the persistent session to send the request
     r = session.post(tokenURI, json=body)
     auth = json.loads(r.text)
+    
+    # Store the new token and its expiry time in the cache
+    AUTH_TOKEN_CACHE['token'] = auth["accessToken"]
+    AUTH_TOKEN_CACHE['expiry'] = time.time() + (3600) # Assuming the token expires in 1 hour
     
     return auth["accessToken"]
 
@@ -673,7 +711,7 @@ def GET_ACCOUNT_ID():
 def SKYFLOW_PROCESS_PII(session, vault_id, table_name, primary_key, pii_fields):
     # Load credentials and generate auth token
     credentials = json.loads(_snowflake.get_generic_secret_string('cred'), strict=False)
-    auth_token = GENERATE_AUTH_TOKEN(credentials)
+    auth_token = GENERATE_AUTH_TOKEN()
 
     # Convert primary_key and pii_fields to uppercase
     primary_key = primary_key.upper()
