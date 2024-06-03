@@ -57,7 +57,7 @@ def init_app(session: Session, config) -> str:
   external_access_integration_name = config['external_access_integration_name']
 
   alter_function_sql = f'''
-    ALTER FUNCTION code_schema.skyflow_search(string, string, string, string) SET 
+    ALTER FUNCTION code_schema.search(string, string, string, string) SET 
     SECRETS = ('token' = {secret_name}) 
     EXTERNAL_ACCESS_INTEGRATIONS = ({external_access_integration_name})'''
   
@@ -65,9 +65,9 @@ def init_app(session: Session, config) -> str:
 
   return 'Skyflow app initialized'
 
-def skyflow_search(vault_url, table_name, column_name, name_to_search):
+def search(vault_url, table_name, column_name, name_to_search):
   """
-    skyflow_search performs an ILIKE query within a specified vault and retrieves the data.
+    search performs an ILIKE query within a specified vault and retrieves the data.
 
     Args:
         vault_url (str): The API URL of the vault where the tokenized data is stored. Must be of the form: https://identifier.vault.skyflowapis.com/v1/vaults/{vaultID}
