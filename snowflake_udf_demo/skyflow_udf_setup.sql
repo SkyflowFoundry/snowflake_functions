@@ -607,7 +607,7 @@ def GET_VAULT_ID_BY_NAME(session, auth_token, vault_name):
     
     return vault_response["vaults"][0]["ID"]   
 
-@vectorized(input=pandas.DataFrame, max_batch_size=100)
+@vectorized(input=pandas.DataFrame, max_batch_size=25)
 def SKYFLOW_DETOKENIZE(token_df):
     auth_token = GENERATE_AUTH_TOKEN()
     vault_id = GET_VAULT_ID_BY_NAME(session, auth_token, 'SkyflowVault')
@@ -706,7 +706,7 @@ def GENERATE_AUTH_TOKEN():
     return auth["accessToken"]
 
 def GET_ACCOUNT_ID():
-    return "<TODO: ACCOUNT_ID>"
+    return "hd873b584c194159a38f1fb0ed18bbee"
 
 def SKYFLOW_PROCESS_PII(session, vault_id, table_name, primary_key, pii_fields):
     # Load credentials and generate auth token
