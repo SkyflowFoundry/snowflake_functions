@@ -2,10 +2,22 @@ import simplejson as sjson
 import jwt
 import requests
 import time
+import pandas
 from snowflake.snowpark import Session
-from snowflake.snowpark.context import get_active_session
-from snowflake.snowpark import Row
+from cachetools import cached, TTLCache
 import _snowflake
+from _snowflake import vectorized
+
+
+def retry(attempts, delay, multiplier, callback):
+    for i in range(attempts):
+        result = callback()
+        if result is not None:
+            return result
+        time.sleep(delay / 1000)  # Convert milliseconds to seconds
+        delay *= multiplier  # Exponential backoff
+    raise Exception(
+        "Max retries exceeded. Error occurred generating bearer token")
 
 
 def get_signed_jwt(credentials):
@@ -23,10 +35,16 @@ def get_signed_jwt(credentials):
         credentials["privateKey"],
         algorithm='RS256')
 
-    return signedJWT, credentials
+    return signedJWT
 
 
-def get_bearer_token(signed_jwt, credentials):
+@cached(cache=TTLCache(maxsize=1024, ttl=3600))
+def get_bearer_token(credentials_hashable):
+    credentials = dict(credentials_hashable)
+
+    # Get signed jwt
+    signed_jwt = get_signed_jwt(credentials)
+
     # Request body parameters
     body = {
         'grant_type': 'urn:ietf:params:oauth:grant-type:jwt-bearer',
@@ -40,12 +58,8 @@ def get_bearer_token(signed_jwt, credentials):
         response.raise_for_status()
         return response.text
 
-    except requests.exceptions.HTTPError as error:
-        return (
-            f"A HTTP error occurred while generating bearer token: {error}")
-
     except Exception as error:
-        return (f"An error occurred generating bearer token: {error}")
+        return None
 
 
 def init_app(session: Session, config) -> str:
@@ -59,12 +73,13 @@ def init_app(session: Session, config) -> str:
       Returns:
           str: A status message indicating the result of the provisioning process.
       """
-    secret_name = config['secret_name']
+    service_account_credential = config['service_account_credential']
+    vault_url = config['vault_url']
     external_access_integration_name = config['external_access_integration_name']
 
     alter_function_sql = f'''
-    ALTER FUNCTION code_schema.skyflowDetokenize(string, string) SET
-    SECRETS = ('token' = {secret_name})
+    ALTER FUNCTION code_schema.detokenize(varchar) SET
+    SECRETS = ('token' = {service_account_credential}, 'vault_url' = {vault_url})
     EXTERNAL_ACCESS_INTEGRATIONS = ({external_access_integration_name})'''
 
     session.sql(alter_function_sql).collect()
@@ -72,13 +87,13 @@ def init_app(session: Session, config) -> str:
     return 'Skyflow Detokenization App initialized'
 
 
-def skyflowDetokenize(vault_url, token):
+@vectorized(input=pandas.DataFrame, max_batch_size=25)
+def detokenize(token):
     """
-      skyflowDetokenize performs a detokenize call for a specified vault and retrieves the data.
+      detokenize performs a detokenize call for a specified vault and retrieves the data.
 
       Args:
-          vault_url (string): The API URL of the vault where the tokenized data is stored. Must be of the form: https://identifier.vault.skyflowapis.com/v1/vaults/{vaultID}
-          token (string): The tokens to be detokenized.
+        token (varchar): The tokens to be detokenized.
 
       Returns:
           string: A string representing the original data associated with the provided token.
@@ -87,43 +102,49 @@ def skyflowDetokenize(vault_url, token):
     credentials = sjson.loads(
         _snowflake.get_generic_secret_string('token'),
         strict=False)
-    jwt_token, creds = get_signed_jwt(credentials)
-    bearer_token = sjson.loads(
-        get_bearer_token(
-            jwt_token,
-            creds),
-        strict=False)
 
-    batch_size = 25
-    tokens = []
-    tokens.append(token)
-    output = []
-    batched_tokens = [tokens[i:i + batch_size]
-                      for i in range(0, len(tokens), batch_size)]
+    credentials_hashable = tuple(sorted(credentials.items()))
 
-    for batch in batched_tokens:
-        detokenization_parameters = [{"token": token} for token in batch]
-        body = {"detokenizationParameters": detokenization_parameters}
+    bearer_token_response = retry(
+        3, 100, 2, lambda: get_bearer_token(credentials_hashable)
+    )
+    bearer_token = sjson.loads(bearer_token_response, strict=False)
 
-        url = vault_url + "/detokenize"
-        headers = {
-            "Authorization": "Bearer " + bearer_token['accessToken']
-        }
+    skyflow_vault_url = _snowflake.get_generic_secret_string('vault_url')
 
-        try:
-            session = requests.Session()
-            response = session.post(url, json=body, headers=headers)
-            response.raise_for_status()
+    token_values = token[0].apply(
+        lambda x: {
+            'token': x,
+            'redaction': 'PLAIN_TEXT'}).tolist()
+    body = {
+        'detokenizationParameters': token_values
+    }
+    # url should be of the form
+    # https://identifier.vault.skyflowapis.com/v1/vaults/{vaultID}/detokenize
+    url = skyflow_vault_url + "/detokenize"
+    headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        "Authorization": "Bearer " + bearer_token['accessToken']
+    }
 
-            response_as_json = sjson.loads(response.text)
-            for record in response_as_json['records']:
-                output.append(record['value'])
+    try:
+        session = requests.Session()
+        response = retry(
+            5, 100, 2, lambda: session.post(url, json=body, headers=headers))
+        response.raise_for_status()
 
-        except requests.exceptions.HTTPError as error:
-            return (
-                f"A HTTP error occurred while performing detokenize: {error}")
+        response_as_json = sjson.loads(response.text)
 
-        except Exception as error:
-            return (f"An error occurred while performing detokenize: {error}")
+        data = []
 
-    return sjson.dumps(output)
+        for record in response_as_json['records']:
+            data.append(record['value'])
+
+    except requests.exceptions.HTTPError as error:
+        return (f"A HTTP error occurred while performing detokenize: {error}")
+
+    except Exception as error:
+        return (f"An error occurred while performing detokenize: {error}")
+
+    return pandas.Series(data)

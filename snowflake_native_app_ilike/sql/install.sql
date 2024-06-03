@@ -57,4 +57,4 @@ USE DATABASE IDENTIFIER($DATABASE_NAME);
 USE SCHEMA IDENTIFIER($SCHEMA_NAME);
 
 -- ILIKE name (Replace shoppers with your table_name in the query below)
-SELECT skyflow_app.code_schema.skyflowSearch($vault_url, $table_name, $column_name, $name_to_search) AS name FROM shoppers;
+SELECT skyflow_app.code_schema.search($vault_url, $table_name, $column_name, $name_to_search) AS name FROM shoppers;

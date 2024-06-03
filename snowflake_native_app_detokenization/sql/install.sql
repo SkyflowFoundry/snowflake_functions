@@ -62,4 +62,4 @@ USE SCHEMA IDENTIFIER($SCHEMA_NAME);
 
 -- Detokenize
 -- Replace column_name and table_name with your column name and table name which contains the tokens to be detokenized
-SELECT column_name, skyflow_app.code_schema.skyflowDetokenize(column_name) from table_name;
+SELECT column_name, skyflow_app.code_schema.detokenize(column_name) from table_name;
