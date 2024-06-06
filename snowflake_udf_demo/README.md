@@ -6,7 +6,7 @@ Pre-requisites:
 * A command-line terminal with python installed
 
 Setup Steps:
-1. Download this repo, and navigate to the ```snowflake_udf_demo``` folder in a command-line terminal.
+1. Clone (or Download+Unzip) this repo, and navigate to the ```snowflake_udf_demo``` folder in a command-line terminal.
 
 2. Log into Skyflow via browser and [create a service account](https://docs.skyflow.com/api-authentication/#create-a-service-account). Ensure the Account Admin role is enabled when going through the creation wizard. Move or copy the auto-downloaded ```credentials.json``` file into the ```snowflake_udf_demo``` folder.
 
