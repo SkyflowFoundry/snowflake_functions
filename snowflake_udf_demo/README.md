@@ -1,4 +1,4 @@
-# Skyflow for Snowflake Setup Instructions
+# Skyflow for Snowflake UDF Setup Instructions
 
 Pre-requisites:
 * A Snowflake account with Account Admin privileges
