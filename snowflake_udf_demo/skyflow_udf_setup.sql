@@ -157,6 +157,7 @@ import requests
 import time
 import logging
 from urllib.parse import quote_plus
+from requests.exceptions import RequestException
 
 # Initialize a session object at the global scope
 session = requests.Session()
@@ -431,7 +432,7 @@ def SKYFLOW_TOKENIZE_TABLE(snowflake_session, vault_name, table_name, primary_ke
     all_records = df.collect()
     batch_size = 25
     
-    # Split records into batches of 25
+    # Split records into batches of the defined size
     batches = [all_records[i:i + batch_size] for i in range(0, len(all_records), batch_size)]
 
     # Initialize dictionaries to store CASE expressions for each field
@@ -439,63 +440,77 @@ def SKYFLOW_TOKENIZE_TABLE(snowflake_session, vault_name, table_name, primary_ke
     update_ids = []
 
     # Define a function to execute the update statement
-    def execute_update(sql_command, update_ids_subset):
-        # Construct the final UPDATE statement with CASE expressions for each field
-        sql_command += f" WHERE {primary_key} IN ({', '.join(update_ids_subset)})"
+    def execute_update():
+        for field, expressions in case_expressions.items():
+            if expressions:
+                sql_command = f"UPDATE {table_name} SET {field} = CASE {primary_key} {' '.join(expressions)} END WHERE {primary_key} IN ({', '.join(update_ids)})"
         # Execute the UPDATE statement
+                try:
         snowflake_session.sql(sql_command).collect()
+                except Exception as e:
+                    print(f"Error executing update for field {field}: {e}")
+        # Clear the dictionaries and lists for the next set of updates
+        for key in case_expressions:
+            case_expressions[key] = []
+        update_ids.clear()
 
-    for batch_index, batch in enumerate(batches):
+    try:
+        for batch in batches:
         records = []
-        for row_index, row in enumerate(batch):
+            batch_update_ids = []
+            for row in batch:
             # Construct the record with the specific fields
             record = {
                 "fields": {column: row[column] for column in pii_columns}
             }
             records.append(record)
             # Add the plaintext primary_key to the list for WHERE clause matching
-            update_ids.append(str(row[primary_key]))
+                batch_update_ids.append(str(row[primary_key]))
         
         body = {
             "records": records,
             "tokenization": True
         }
 
-        url = f"https://ebfc9bee4242.vault.skyflowapis.com/v1/vaults/{vault_id}/" + table_name
+            url = f"https://ebfc9bee4242.vault.skyflowapis.com/v1/vaults/{vault_id}/{table_name}"
         headers = {
             "Authorization": "Bearer " + auth_token
         }
         
-        response = session.post(url, json=body, headers=headers)
+            try:
+                response = requests.post(url, json=body, headers=headers)
+                response.raise_for_status()
         response_as_json = response.json()
+            except RequestException as e:
+                print(f"HTTP request failed: {e}")
+                return f"HTTP request failed: {e}"
         
         # Check if 'records' key exists in the response
         if "records" in response_as_json:
             # Construct the CASE expressions for each field using update_ids
             for i, record in enumerate(response_as_json["records"]):
-                # Use the index to find the corresponding primary_key from update_ids
-                id_index = batch_index * batch_size + i
-                primary_key_value = update_ids[id_index]
+                    if i >= len(batch_update_ids):
+                        print(f"Index {i} out of range for batch_update_ids")
+                        continue
+                    primary_key_value = batch_update_ids[i]
                 for field, token in record["tokens"].items():
                     case_expression = f"WHEN '{primary_key_value}' THEN '{token}'"
                     case_expressions[field].append(case_expression)
                     
-                    # Check if the limit is reached, then execute the update
-                    if len(case_expressions[field]) >= 10000:  # Set to one less than the limit to account for the current expression
-                        sql_command = f"UPDATE {table_name} SET {field} = CASE {primary_key} {' '.join(case_expressions[field])} END"
-                        execute_update(sql_command, update_ids[:10000])
-                        # Reset the expressions and primary_key values for the next batch
-                        case_expressions[field] = case_expressions[field][10000:]
-                        update_ids = update_ids[10000:]
+                        # Check if the length of the SQL command exceeds a safe limit
+                        if len(case_expressions[field]) >= 100 or len(" ".join(case_expressions[field])) > 50000:  # Adjust limit as needed
+                            execute_update()
+                            update_ids.extend(batch_update_ids[:100])
+                            batch_update_ids = batch_update_ids[100:]
+
+                update_ids.extend(batch_update_ids)
         else:
             print("Key 'records' not found in the response.")
             return "Key 'records' not found in the response."
 
     # Execute any remaining updates
-    for field in case_expressions:
-        if case_expressions[field]:
-            sql_command = f"UPDATE {table_name} SET {field} = CASE {primary_key} {' '.join(case_expressions[field])} END"
-            execute_update(sql_command, update_ids)
+        if update_ids or any(case_expressions[field] for field in case_expressions):
+            execute_update()
 
     # Create or replace the stream and task for continuous tokenization
     snowflake_session.sql(f"CREATE OR REPLACE STREAM SKYFLOW_PII_STREAM_{table_name} ON TABLE {table_name}").collect()
@@ -503,7 +518,12 @@ def SKYFLOW_TOKENIZE_TABLE(snowflake_session, vault_name, table_name, primary_ke
     snowflake_session.sql(f"ALTER TASK SKYFLOW_PII_STREAM_{table_name}_TASK RESUME").collect()
 
     return "Tokenization completed successfully"
-
+    except IndexError as e:
+        print(f"IndexError: {e}")
+        return f"IndexError: {e}"
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return f"An error occurred: {e}"
 $$;
 
 
