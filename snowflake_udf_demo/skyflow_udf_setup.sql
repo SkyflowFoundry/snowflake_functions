@@ -156,6 +156,7 @@ import jwt
 import requests 
 import time
 import logging
+import re
 from urllib.parse import quote_plus
 
 # Initialize a session object at the global scope
@@ -420,7 +421,12 @@ def SKYFLOW_CREATE_VAULT(auth_token, vault_name, table_name, primary_key, pii_fi
 
 def SKYFLOW_TOKENIZE_TABLE(snowflake_session, vault_name, table_name, primary_key, pii_fields_delimited, vault_owner_email):
     auth_token = GENERATE_AUTH_TOKEN()
+
+    if re.match(r"^[a-z0-9]{32}$", vault_name):
+        vault_id = vault_name
+    else:
     vault_id = SKYFLOW_CREATE_VAULT(auth_token, vault_name, table_name, primary_key, pii_fields_delimited, vault_owner_email)
+
 
     # Convert the comma-separated list of PII fields into a list
     pii_columns = pii_fields_delimited.split(',')
