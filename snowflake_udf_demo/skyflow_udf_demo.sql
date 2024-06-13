@@ -3,11 +3,14 @@ USE DATABASE SKYFLOW_DEMO;
 
 -- Step 1: Check table to see initial plain text PII
 SELECT * FROM CUSTOMERS;
+SELECT COUNT(*) FROM CUSTOMERS;
 
 -- Step 2: Tokenize the table, passing in table name as a parameter, and query the table again.
---   SKYFLOW_TOKENIZE_TABLE(VAULT_NAME, TABLE_NAME, PRIMARY_KEY, 'PII_COL1,PII_COL2,PII_COL3,PII_COL4,...', 'VAULT_OWNER_EMAIL');
 
-CALL SKYFLOW_TOKENIZE_TABLE('SkyflowVault', 'CUSTOMERS', 'CUSTOMER_ID', 'NAME,EMAIL,PHONE,ADDRESS', 'yourname@yourdomain.com');
+--   SKYFLOW_TOKENIZE_TABLE(VAULT_NAME, TABLE_NAME, PRIMARY_KEY, 'PII_COL1,PII_COL2,PII_COL3,PII_COL4,...', 'VAULT_OWNER_EMAIL');
+CALL SKYFLOW_TOKENIZE_TABLE('SkyflowVault', 'CUSTOMERS', 'CUSTOMER_ID', 'NAME,EMAIL,PHONE,ADDRESS', 'sam@skyflow.com');
+-- After vault creation, the vault_id can be used to reference the existing vault
+-- CALL SKYFLOW_TOKENIZE_TABLE('f7262e8121264fcfaf0739a5b397d0ea', 'CUSTOMERS', 'CUSTOMER_ID', 'NAME,EMAIL,PHONE,ADDRESS', 'sam@skyflow.com');
 
 -- Step 3a: Run a sample query without detokenizing, for example the customers who joined after year 2010. PII will be tokenized.
 SELECT  CUSTOMER_ID,
@@ -29,7 +32,7 @@ WHERE CUSTOMER_SINCE > '2010';
 
 -- Step 4: Make some updates to the data
 DELETE FROM CUSTOMERS WHERE CUSTOMER_ID = 1 OR CUSTOMER_ID = 2; -- Delete a few records
-UPDATE CUSTOMERS SET NAME = 'Michael Smith', PHONE = '555-111-5555' WHERE CUSTOMER_ID = 3; -- Update a record
+-- TODO: UPDATE CUSTOMERS SET NAME = 'Michael Smith', PHONE = '555-111-5555' WHERE CUSTOMER_ID = 3; -- Update a record
 INSERT INTO CUSTOMERS VALUES -- Insert a few new records
     (101, 'John Smith', 'john@example.com', '555-222-5555', '123 Fake Street NY NY 10019', '$5000', '2020-01-01'),
     (102, 'Harry Truman', 'harry@example.com', '555-333-5555', '234 Fake Street NY NY 10019', '$6000', '2023-01-01'),
