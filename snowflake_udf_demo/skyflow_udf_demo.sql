@@ -5,9 +5,15 @@ USE DATABASE SKYFLOW_DEMO;
 SELECT * FROM CUSTOMERS;
 
 -- Step 2: Tokenize the table, passing in table name as a parameter, and query the table again.
---   SKYFLOW_TOKENIZE_TABLE(VAULT_NAME, TABLE_NAME, PRIMARY_KEY, 'PII_COL1,PII_COL2,PII_COL3,PII_COL4,...', 'VAULT_OWNER_EMAIL');
+--   SKYFLOW_TOKENIZE_TABLE(NEW_VAULT_NAME, TABLE_NAME, PRIMARY_KEY, 'PII_COL1,PII_COL2,PII_COL3,PII_COL4,...', 'VAULT_OWNER_EMAIL');
+-- OR
+--   SKYFLOW_TOKENIZE_TABLE(EXISTING_VAULT_ID, TABLE_NAME, PRIMARY_KEY, 'PII_COL1,PII_COL2,PII_COL3,PII_COL4,...', 'VAULT_OWNER_EMAIL');
 
 CALL SKYFLOW_TOKENIZE_TABLE('SkyflowVault', 'CUSTOMERS', 'CUSTOMER_ID', 'NAME,EMAIL,PHONE,ADDRESS', 'yourname@yourdomain.com');
+-- OR
+CALL SKYFLOW_TOKENIZE_TABLE('<32_digit_vault_id>', 'CUSTOMERS', 'CUSTOMER_ID', 'NAME,EMAIL,PHONE,ADDRESS', 'yourname@yourdomain.com');
+--Example: CALL SKYFLOW_TOKENIZE_TABLE('ac5578ba33034a1c9778730c4a1a728f', 'CUSTOMERS', 'CUSTOMER_ID', 'NAME,EMAIL,PHONE,ADDRESS', 'yourname@yourdomain.com');
+
 
 -- Step 3a: Run a sample query without detokenizing, for example the customers who joined after year 2010. PII will be tokenized.
 SELECT  CUSTOMER_ID,
