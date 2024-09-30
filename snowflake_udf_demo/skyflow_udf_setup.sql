@@ -497,10 +497,38 @@ def SKYFLOW_TOKENIZE_TABLE(snowflake_session, vault_name, table_name, primary_ke
             sql_command = f"UPDATE {table_name} SET {field} = CASE {primary_key} {' '.join(case_expressions[field])} END"
             execute_update(sql_command, update_ids)
 
+    # Retrieve the current warehouse from the session
+    warehouse_name = snowflake_session.sql("SELECT CURRENT_WAREHOUSE()").collect()[0][0]
+    
+    # Ensure that a warehouse is set
+    if not warehouse_name:
+        raise ValueError("No warehouse is currently set in the session. Please set a warehouse before running this code.")
+
     # Create or replace the stream and task for continuous tokenization
-    snowflake_session.sql(f"CREATE OR REPLACE STREAM SKYFLOW_PII_STREAM_{table_name} ON TABLE {table_name}").collect()
-    snowflake_session.sql(f"CREATE OR REPLACE TASK SKYFLOW_PII_STREAM_{table_name}_TASK WAREHOUSE = 'COMPUTE_WH' SCHEDULE = '1 MINUTE' WHEN SYSTEM$STREAM_HAS_DATA('SKYFLOW_PII_STREAM_{table_name}') AS CALL SKYFLOW_PROCESS_PII('{vault_id}', '{table_name}', '{primary_key}', '{pii_fields_delimited}')").collect()
-    snowflake_session.sql(f"ALTER TASK SKYFLOW_PII_STREAM_{table_name}_TASK RESUME").collect()
+    # Create the stream
+    snowflake_session.sql(f"""
+        CREATE OR REPLACE STREAM SKYFLOW_PII_STREAM_{table_name}
+        ON TABLE {table_name}
+    """).collect()
+    
+    # Create the task using the current warehouse
+    snowflake_session.sql(f"""
+        CREATE OR REPLACE TASK SKYFLOW_PII_STREAM_{table_name}_TASK
+        WAREHOUSE = '{warehouse_name}'
+        SCHEDULE = '1 MINUTE'
+        WHEN SYSTEM$STREAM_HAS_DATA('SKYFLOW_PII_STREAM_{table_name}')
+        AS CALL SKYFLOW_PROCESS_PII(
+            '{vault_id}',
+            '{table_name}',
+            '{primary_key}',
+            '{pii_fields_delimited}'
+        )
+    """).collect()
+    
+    # Resume the task
+    snowflake_session.sql(f"""
+        ALTER TASK SKYFLOW_PII_STREAM_{table_name}_TASK RESUME
+    """).collect()
 
     return "Tokenization completed successfully"
 
