@@ -13,112 +13,63 @@ CREATE OR REPLACE TABLE SKYFLOW_DEMO.PUBLIC.CUSTOMERS (
     CUSTOMER_SINCE VARCHAR(16777216)
 );
 
--- Step 3: In Skyflow Studio, create a table having the same name as your Snowflake table. Add a table column for each Snowflake PII column you want to protect, also matching column name.
+INSERT INTO SKYFLOW_DEMO.PUBLIC.CUSTOMERS (CUSTOMER_ID, NAME, EMAIL, PHONE, ADDRESS, LIFETIME_PURCHASE_AMOUNT, CUSTOMER_SINCE)
+SELECT 
+    SEQ4() AS CUSTOMER_ID,
+
+    -- Simplified name generation
+    CONCAT(
+        CASE WHEN RANDOM() > 0.5 THEN 'Mr. ' ELSE 'Ms. ' END,
+        CASE WHEN RANDOM() < 0.25 THEN 'John ' 
+             WHEN RANDOM() < 0.5 THEN 'Robert ' 
+             WHEN RANDOM() < 0.75 THEN 'James ' 
+             ELSE 'William ' END, 
+        INITCAP(SUBSTR(MD5(RANDOM()), 1, 10))
+    ) AS NAME,
+
+    -- Simplified email generation based on name
+    LOWER(CONCAT(
+        CASE WHEN RANDOM() > 0.5 THEN 'mr.' ELSE 'ms.' END, 
+        CASE WHEN RANDOM() < 0.25 THEN 'john.' 
+             WHEN RANDOM() < 0.5 THEN 'robert.' 
+             WHEN RANDOM() < 0.75 THEN 'james.' 
+             ELSE 'william.' END, 
+        SUBSTR(MD5(RANDOM()), 1, 10), 
+        CASE WHEN RANDOM() > 0.5 THEN '@example.com' ELSE '@company.com' END
+    )) AS EMAIL,
+
+    -- Phone number with (XXX) 555-XXXX format
+    CONCAT(
+        '+1 (', UNIFORM(200, 999, RANDOM()), ') 555-',  -- Random 3-digit area code and fixed 555 exchange
+        LPAD(TO_VARCHAR(UNIFORM(1000, 9999, RANDOM())), 4, '0')  -- Subscriber number
+    ) AS PHONE,
+
+    -- Simplified address generation
+    CONCAT(
+        UNIFORM(100, 999, RANDOM()), ' ', 
+        CASE WHEN RANDOM() < 0.25 THEN 'Main St' 
+             WHEN RANDOM() < 0.5 THEN 'Maple Ave' 
+             WHEN RANDOM() < 0.75 THEN 'Elm St' 
+             ELSE 'Oak St' END, ', ', 
+        CASE WHEN RANDOM() < 0.25 THEN 'New York' 
+             WHEN RANDOM() < 0.5 THEN 'Los Angeles' 
+             WHEN RANDOM() < 0.75 THEN 'Chicago' 
+             ELSE 'San Francisco' END, ' ', 
+        SUBSTR(MD5(RANDOM()), 1, 2), ' ', 
+        UNIFORM(10000, 99999, RANDOM())
+    ) AS ADDRESS,
+
+    -- Random lifetime purchase amount
+    CONCAT('$', TO_VARCHAR(ROUND(UNIFORM(0, 10000, RANDOM())::NUMERIC(10,2), 2))) AS LIFETIME_PURCHASE_AMOUNT,
+
+    -- Random 'customer since' date
+    CONCAT(UNIFORM(2000, 2022, RANDOM()), '-', 
+           LPAD(TO_VARCHAR(UNIFORM(1, 12, RANDOM())), 2, '0'), '-', 
+           LPAD(TO_VARCHAR(UNIFORM(1, 28, RANDOM())), 2, '0')) AS CUSTOMER_SINCE
+
+FROM TABLE(GENERATOR(ROWCOUNT => 100));
 
 -- Step 4: Insert sample records into table
-INSERT INTO CUSTOMERS (CUSTOMER_ID, NAME, EMAIL, PHONE, ADDRESS, LIFETIME_PURCHASE_AMOUNT, CUSTOMER_SINCE) VALUES
-    (1,'Mr Emily Williams','Mr.emily.williams@example.com','+1 555-628-8461','546 Maple St Chicago CA 51610','$100.30','2006-01-10'),
-    (2,'Mr Anna Jones','Mr.anna.jones@example.com','+1 555-628-8461','546 Maple St Chicago CA 51610','$2350.00','2010-02-27'),
-    (3,'Mr Anna Williams','Mr.anna.williams@example.com','+1 555-628-8461','546 Maple St Chicago CA 51610','$10000.50','2014-01-05'),
-    (4,'Mr Michael Williams','Mr.michael.williams@example.com','+1 555-860-5835','114 Maple St Chicago TX 20094','$2350.00','2022-06-12'),
-    (5,'Mr John Smith','Mr.john.smith@example.com','+1 555-949-7779','631 Pine St Houston IL 14847','$10000.50','2005-08-06'),
-    (6,'Mr John Johnson','Mr.john.johnson@example.com','+1 555-607-2361','931 Birch St Chicago CA 83399','$0.00','2021-05-14'),
-    (7,'Mr Sarah Johnson','Mr.sarah.johnson@example.com','+1 555-997-1200','236 Maple St New York NY 50705','$2350.00','2020-12-20'),
-    (8,'Mr John Smith','Mr.john.smith@example.com','+1 555-568-7149','432 Main St Los Angeles TX 54601','$100.30','2000-04-06'),
-    (9,'Mr Anna Smith','Mr.anna.smith@example.com','+1 555-805-8960','369 Pine St Los Angeles AZ 48124','$5.00','2020-12-02'),
-    (10,'Mr Emily Johnson','Mr.emily.johnson@example.com','+1 555-523-8453','973 Birch St Phoenix CA 80252','$0.00','2010-12-03'),
-    (11,'Mr Anna Williams','Mr.anna.williams@example.com','+1 555-253-5153','276 Maple St Chicago CA 63105','$2350.00','2010-10-28'),
-    (12,'Mr John Jones','Mr.john.jones@example.com','+1 555-557-6005','732 Pine St Phoenix NY 29608','$10000.50','2017-11-12'),
-    (13,'Mr Sarah Jones','Mr.sarah.jones@example.com','+1 555-598-3481','354 Maple St Houston IL 24895','$100.30','2020-12-11'),
-    (14,'Mr Anna Jones','Mr.anna.jones@example.com','+1 555-645-9231','496 Pine St Los Angeles NY 56789','$0.00','2009-07-11'),
-    (15,'Mr Emily Johnson','Mr.emily.johnson@example.com','+1 555-636-4305','875 Oak St Phoenix IL 12450','$2350.00','2018-02-28'),
-    (16,'Mr Sarah Brown','Mr.sarah.brown@example.com','+1 555-986-8006','106 Oak St Chicago AZ 25991','$5.00','2021-07-04'),
-    (17,'Mr John Brown','Mr.john.brown@example.com','+1 555-807-3363','913 Main St Houston NY 25919','$5.00','2011-01-20'),
-    (18,'Mr Emily Williams','Mr.emily.williams@example.com','+1 555-155-1355','920 Pine St New York NY 43337','$100.30','2018-04-11'),
-    (19,'Mr Sarah Williams','Mr.sarah.williams@example.com','+1 555-931-4635','165 Birch St Los Angeles IL 73464','$0.00','2014-04-23'),
-    (20,'Mr Emily Brown','Mr.emily.brown@example.com','+1 555-732-6362','901 Pine St Chicago TX 79604','$100.30','2017-12-07'),
-    (21,'Mr Anna Williams','Mr.anna.williams@example.com','+1 555-947-1780','356 Oak St New York AZ 20027','$5.00','2017-08-04'),
-    (22,'Mr Sarah Brown','Mr.sarah.brown@example.com','+1 555-141-9085','468 Pine St Phoenix CA 84368','$10000.50','2012-09-19'),
-    (23,'Mr Emily Brown','Mr.emily.brown@example.com','+1 555-533-1275','731 Pine St Los Angeles NY 30352','$10000.50','2016-12-07'),
-    (24,'Mr Sarah Smith','Mr.sarah.smith@example.com','+1 555-118-1603','909 Maple St New York TX 84958','$100.30','2012-03-01'),
-    (25,'Mr Michael Johnson','Mr.michael.johnson@example.com','+1 555-719-2980','547 Main St Phoenix CA 34402','$10000.50','2000-07-10'),
-    (26,'Mr Anna Brown','Mr.anna.brown@example.com','+1 555-405-3115','402 Birch St Phoenix TX 21963','$5.00','2021-11-08'),
-    (27,'Mr Michael Smith','Mr.michael.smith@example.com','+1 555-536-7415','596 Main St New York NY 79193','$100.30','2004-02-04'),
-    (28,'Mr John Smith','Mr.john.smith@example.com','+1 555-527-8872','832 Maple St New York AZ 65481','$10000.50','2012-09-10'),
-    (29,'Mr Emily Williams','Mr.emily.williams@example.com','+1 555-451-5503','684 Main St Phoenix TX 17913','$2350.00','2014-10-23'),
-    (30,'Mr Anna Williams','Mr.anna.williams@example.com','+1 555-412-2403','675 Oak St New York AZ 34649','$10000.50','2021-12-12'),
-    (31,'Mr Michael Johnson','Mr.michael.johnson@example.com','+1 555-650-8115','730 Maple St Chicago NY 70293','$10000.50','2008-09-26'),
-    (32,'Mr Michael Johnson','Mr.michael.johnson@example.com','+1 555-880-6807','787 Main St Los Angeles TX 93741','$100.30','2018-03-19'),
-    (33,'Mr Michael Williams','Mr.michael.williams@example.com','+1 555-653-1151','918 Maple St New York AZ 28774','$10000.50','2015-08-24'),
-    (34,'Mr Sarah Brown','Mr.sarah.brown@example.com','+1 555-628-8883','735 Birch St Houston NY 15679','$2350.00','2017-07-23'),
-    (35,'Mr Emily Johnson','Mr.emily.johnson@example.com','+1 555-874-5521','966 Main St Los Angeles AZ 83625','$2350.00','2004-11-19'),
-    (36,'Mr Michael Smith','Mr.michael.smith@example.com','+1 555-631-9568','639 Maple St Houston IL 82723','$0.00','2005-01-24'),
-    (37,'Mr Emily Johnson','Mr.emily.johnson@example.com','+1 555-383-7664','804 Maple St Los Angeles NY 18453','$100.30','2013-12-03'),
-    (38,'Mr Anna Williams','Mr.anna.williams@example.com','+1 555-876-6670','375 Pine St Chicago AZ 31448','$2350.00','2002-09-06'),
-    (39,'Mr Emily Brown','Mr.emily.brown@example.com','+1 555-476-2852','905 Main St Chicago AZ 81225','$2350.00','2003-06-26'),
-    (40,'Mr John Smith','Mr.john.smith@example.com','+1 555-415-4763','380 Main St Los Angeles CA 47263','$0.00','2018-11-14'),
-    (41,'Mr Anna Jones','Mr.anna.jones@example.com','+1 555-396-2464','389 Maple St Houston IL 97103','$2350.00','2004-03-08'),
-    (42,'Mr John Brown','Mr.john.brown@example.com','+1 555-212-6343','132 Maple St Chicago TX 92655','$10000.50','2004-05-03'),
-    (43,'Mr Michael Williams','Mr.michael.williams@example.com','+1 555-556-1788','991 Birch St Los Angeles TX 98976','$2350.00','2003-11-05'),
-    (44,'Mr Anna Brown','Mr.anna.brown@example.com','+1 555-624-5962','491 Main St Houston AZ 83095','$2350.00','2017-01-24'),
-    (45,'Mr Anna Williams','Mr.anna.williams@example.com','+1 555-684-7247','360 Maple St New York IL 92069','$100.30','2013-05-02'),
-    (46,'Mr Anna Williams','Mr.anna.williams@example.com','+1 555-839-3067','211 Oak St New York NY 58052','$0.00','2015-09-09'),
-    (47,'Mr Emily Williams','Mr.emily.williams@example.com','+1 555-943-6665','551 Main St Houston CA 86607','$0.00','2002-10-04'),
-    (48,'Mr Michael Jones','Mr.michael.jones@example.com','+1 555-804-2178','336 Maple St Los Angeles CA 99571','$2350.00','2016-01-17'),
-    (49,'Mr John Brown','Mr.john.brown@example.com','+1 555-803-3573','743 Maple St Chicago AZ 89997','$0.00','2002-10-05'),
-    (50,'Mr Anna Smith','Mr.anna.smith@example.com','+1 555-784-5680','200 Pine St Los Angeles CA 43183','$2350.00','2012-09-05'),
-    (51,'Mr Michael Brown','Mr.michael.brown@example.com','+1 555-339-8110','598 Maple St Los Angeles AZ 68893','$0.00','2009-01-02'),
-    (52,'Mr Emily Smith','Mr.emily.smith@example.com','+1 555-570-2056','497 Birch St Chicago TX 21113','$0.00','2009-06-27'),
-    (53,'Mr Sarah Williams','Mr.sarah.williams@example.com','+1 555-403-6942','705 Birch St New York IL 54979','$5.00','2014-02-25'),
-    (54,'Mr Anna Smith','Mr.anna.smith@example.com','+1 555-756-1547','950 Pine St Houston IL 24355','$100.30','2000-09-05'),
-    (55,'Mr Emily Jones','Mr.emily.jones@example.com','+1 555-245-3459','190 Birch St New York NY 33074','$100.30','2021-05-22'),
-    (56,'Mr Anna Johnson','Mr.anna.johnson@example.com','+1 555-359-2592','967 Main St New York CA 31678','$10000.50','2022-01-16'),
-    (57,'Mr Michael Smith','Mr.michael.smith@example.com','+1 555-762-7150','652 Oak St New York CA 39769','$5.00','2018-09-06'),
-    (58,'Mr Anna Brown','Mr.anna.brown@example.com','+1 555-799-9741','277 Birch St Los Angeles IL 81298','$5.00','2011-01-28'),
-    (59,'Mr Anna Jones','Mr.anna.jones@example.com','+1 555-705-4453','597 Oak St New York IL 67312','$0.00','2013-08-22'),
-    (60,'Mr Michael Brown','Mr.michael.brown@example.com','+1 555-330-1073','865 Pine St Phoenix AZ 86148','$100.30','2019-03-26'),
-    (61,'Mr Sarah Brown','Mr.sarah.brown@example.com','+1 555-730-8010','143 Pine St Chicago CA 84620','$100.30','2008-07-19'),
-    (62,'Mr John Brown','Mr.john.brown@example.com','+1 555-764-1226','744 Pine St Los Angeles CA 10398','$100.30','2020-05-13'),
-    (63,'Mr Emily Johnson','Mr.emily.johnson@example.com','+1 555-767-8354','859 Pine St Houston IL 12621','$5.00','2022-06-18'),
-    (64,'Mr Michael Johnson','Mr.michael.johnson@example.com','+1 555-949-7401','875 Main St New York NY 62393','$10000.50','2005-05-15'),
-    (65,'Mr Emily Williams','Mr.emily.williams@example.com','+1 555-899-8752','892 Maple St Houston AZ 78538','$5.00','2002-02-05'),
-    (66,'Mr Emily Williams','Mr.emily.williams@example.com','+1 555-675-3953','807 Maple St Chicago NY 24247','$100.30','2007-05-08'),
-    (67,'Mr Emily Johnson','Mr.emily.johnson@example.com','+1 555-431-3742','172 Birch St Los Angeles IL 96172','$0.00','2020-01-15'),
-    (68,'Mr Anna Brown','Mr.anna.brown@example.com','+1 555-182-5269','454 Oak St Los Angeles AZ 98016','$5.00','2008-01-08'),
-    (69,'Mr Michael Jones','Mr.michael.jones@example.com','+1 555-748-1654','364 Oak St Los Angeles TX 50887','$100.30','2012-03-06'),
-    (70,'Mr Emily Brown','Mr.emily.brown@example.com','+1 555-817-3273','979 Birch St Phoenix CA 62320','$100.30','2000-12-18'),
-    (71,'Mr Anna Smith','Mr.anna.smith@example.com','+1 555-411-3795','886 Maple St Chicago CA 57098','$10000.50','2003-06-02'),
-    (72,'Mr John Smith','Mr.john.smith@example.com','+1 555-405-8614','398 Birch St Chicago IL 66257','$100.30','2009-01-20'),
-    (73,'Mr Michael Williams','Mr.michael.williams@example.com','+1 555-211-6617','660 Pine St Los Angeles IL 27143','$2350.00','2002-05-28'),
-    (74,'Mr Sarah Johnson','Mr.sarah.johnson@example.com','+1 555-866-2798','302 Maple St New York CA 72035','$100.30','2011-07-28'),
-    (75,'Mr John Johnson','Mr.john.johnson@example.com','+1 555-609-9944','935 Pine St New York IL 87011','$100.30','2001-08-12'),
-    (76,'Mr John Johnson','Mr.john.johnson@example.com','+1 555-284-8448','111 Birch St Chicago AZ 46405','$2350.00','2016-08-19'),
-    (77,'Mr Emily Johnson','Mr.emily.johnson@example.com','+1 555-542-3567','356 Birch St Los Angeles AZ 41347','$100.30','2007-06-03'),
-    (78,'Mr John Johnson','Mr.john.johnson@example.com','+1 555-674-1736','432 Main St Phoenix IL 19186','$5.00','2003-09-19'),
-    (79,'Mr Michael Brown','Mr.michael.brown@example.com','+1 555-358-4259','506 Pine St Los Angeles TX 76302','$0.00','2010-09-12'),
-    (80,'Mr Anna Brown','Mr.anna.brown@example.com','+1 555-494-9607','657 Main St New York TX 45174','$100.30','2018-11-06'),
-    (81,'Mr Sarah Johnson','Mr.sarah.johnson@example.com','+1 555-828-5684','541 Maple St Chicago CA 19324','$10000.50','2015-08-27'),
-    (82,'Mr John Williams','Mr.john.williams@example.com','+1 555-683-2906','337 Birch St Phoenix NY 31778','$0.00','2002-03-01'),
-    (83,'Mr Anna Smith','Mr.anna.smith@example.com','+1 555-817-9947','557 Main St Chicago CA 13999','$0.00','2006-05-15'),
-    (84,'Mr Sarah Williams','Mr.sarah.williams@example.com','+1 555-316-5070','354 Birch St Los Angeles AZ 86985','$2350.00','2016-02-14'),
-    (85,'Mr Sarah Jones','Mr.sarah.jones@example.com','+1 555-457-9550','211 Main St Chicago CA 81096','$5.00','2003-07-17'),
-    (86,'Mr Sarah Brown','Mr.sarah.brown@example.com','+1 555-921-5979','839 Oak St Los Angeles TX 51667','$10000.50','2014-07-08'),
-    (87,'Mr John Brown','Mr.john.brown@example.com','+1 555-325-8763','546 Birch St Los Angeles IL 83452','$10000.50','2012-11-26'),
-    (88,'Mr Michael Johnson','Mr.michael.johnson@example.com','+1 555-870-4352','905 Oak St Los Angeles TX 42840','$5.00','2008-09-05'),
-    (89,'Mr Michael Williams','Mr.michael.williams@example.com','+1 555-362-7354','895 Oak St Phoenix TX 38050','$5.00','2003-06-24'),
-    (90,'Mr Emily Johnson','Mr.emily.johnson@example.com','+1 555-518-1078','874 Oak St Los Angeles AZ 64077','$10000.50','2007-06-26'),
-    (91,'Mr Emily Johnson','Mr.emily.johnson@example.com','+1 555-452-7067','562 Birch St Houston AZ 48430','$5.00','2011-03-07'),
-    (92,'Mr Anna Smith','Mr.anna.smith@example.com','+1 555-870-6047','246 Oak St Phoenix IL 39563','$2350.00','2013-04-23'),
-    (93,'Mr Anna Smith','Mr.anna.smith@example.com','+1 555-791-4356','582 Pine St New York IL 40424','$2350.00','2001-09-28'),
-    (94,'Mr Anna Williams','Mr.anna.williams@example.com','+1 555-124-6681','419 Maple St Phoenix AZ 96044','$100.30','2021-10-02'),
-    (95,'Mr John Jones','Mr.john.jones@example.com','+1 555-288-7646','579 Birch St Chicago TX 64340','$10000.50','2000-10-20'),
-    (96,'Mr Michael Smith','Mr.michael.smith@example.com','+1 555-935-9877','714 Birch St Houston NY 53582','$0.00','2017-08-18'),
-    (97,'Mr Michael Williams','Mr.michael.williams@example.com','+1 555-974-5761','892 Oak St Houston TX 43428','$0.00','2017-02-02'),
-    (98,'Mr Michael Brown','Mr.michael.brown@example.com','+1 555-410-3792','820 Main St Chicago NY 21156','$10000.50','2003-02-01'),
-    (99,'Mr Anna Jones','Mr.anna.jones@example.com','+1 555-470-7280','950 Oak St Chicago IL 77228','$2350.00','2009-11-24'),
-    (100,'Mr Michael Johnson','Mr.michael.johnson@example.com','+1 555-296-8615','976 Pine St Los Angeles AZ 76122','$2350.00','2002-04-15');
-
-
 
 -- Step 5: In Skyflow Studio, create a Service Account having Vault Owner access. Upon creation, a credentials.json file will be downloaded. Use it in the next step.
 -- Step 6: Store Skyflow service account key with Snowflake Secrets Manager, pasting in the contents of the credentials.json file into the SECRET_STRING variable.
@@ -140,7 +91,12 @@ CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION SKYFLOW_EXTERNAL_ACCESS_INTEGRATIO
 
  
 -- Step 6: Create Stored Procedure for table tokenization. Skyflow table and column names should match the snowflake table and column names. Include PII columns only.
-CREATE OR REPLACE PROCEDURE SKYFLOW_TOKENIZE_TABLE(vault_name VARCHAR, table_name VARCHAR, primary_key VARCHAR, pii_fields_delimited STRING, vault_owner_email VARCHAR)
+CREATE OR REPLACE PROCEDURE SKYFLOW_TOKENIZE_TABLE(
+    vault_name VARCHAR,
+    table_name VARCHAR,
+    primary_key VARCHAR,
+    pii_fields_delimited STRING,
+    vault_owner_email VARCHAR)
 RETURNS STRING
 LANGUAGE PYTHON
 RUNTIME_VERSION = 3.8
@@ -158,6 +114,7 @@ import time
 import logging
 import re
 from urllib.parse import quote_plus
+from snowflake.snowpark.functions import col
 
 # Initialize a session object at the global scope
 session = requests.Session()
@@ -420,53 +377,73 @@ def SKYFLOW_CREATE_VAULT(auth_token, vault_name, table_name, primary_key, pii_fi
     return vault_response["ID"]
 
 def SKYFLOW_TOKENIZE_TABLE(snowflake_session, vault_name, table_name, primary_key, pii_fields_delimited, vault_owner_email):
+    from requests import Session
+    from snowflake.snowpark.window import Window
+    from snowflake.snowpark.functions import row_number, col
+    import time
+
     auth_token = GENERATE_AUTH_TOKEN()
     
     if re.match(r"^[a-z0-9]{32}$", vault_name):
         vault_id = vault_name
     else:
-        vault_id = SKYFLOW_CREATE_VAULT(auth_token, vault_name, table_name, primary_key, pii_fields_delimited, vault_owner_email)
+        vault_id = SKYFLOW_CREATE_VAULT(
+            auth_token, vault_name, table_name, primary_key, pii_fields_delimited, vault_owner_email
+        )
 
-    # Convert the comma-separated list of PII fields into a list
-    pii_columns = pii_fields_delimited.split(',')
-    pii_columns.append(primary_key)    
+    # Convert the comma-separated list of PII fields into a list and lowercase
+    pii_columns = [field.strip().lower() for field in pii_fields_delimited.split(",")]
+    primary_key_lower = primary_key.lower()
+    primary_key_upper = primary_key.upper()
+    pii_columns.append(primary_key_lower)
     
-    # Fetch data from the Snowflake table
-    df = snowflake_session.table(table_name)
-    all_records = df.collect()
+    # Fetch data from the Snowflake table and add a row number
+    df = snowflake_session.table(table_name).select([col(c.upper()) for c in pii_columns])
+
+    # Add a row number to the DataFrame
+    window_spec = Window.order_by(col(primary_key_upper))
+    df = df.with_column('ROW_NUM', row_number().over(window_spec))
+
+    # Calculate total records and batches
+    total_records = df.count()
+    log_message(snowflake_session, f"Total records counted: {total_records}")
     batch_size = 25
-    
-    # Split records into batches of 25
-    batches = [all_records[i:i + batch_size] for i in range(0, len(all_records), batch_size)]
+    total_batches = (total_records + batch_size - 1) // batch_size
+    log_message(snowflake_session, f"Total number of batches: {total_batches}")
 
-    # Initialize dictionaries to store CASE expressions for each field
-    case_expressions = {column.lower(): [] for column in pii_columns}
-    update_ids = []
+    # Initialize a list to store mappings
+    mapping_data = []
 
-    # Define a function to execute the update statement
-    def execute_update(sql_command, update_ids_subset):
-        # Construct the final UPDATE statement with CASE expressions for each field
-        sql_command += f" WHERE {primary_key} IN ({', '.join(update_ids_subset)})"
-        # Execute the UPDATE statement
-        snowflake_session.sql(sql_command).collect()
+    # Process batches sequentially
+    for batch_num in range(total_batches):
+        try:
+            lower_bound = batch_num * batch_size + 1
+            upper_bound = min((batch_num + 1) * batch_size, total_records)
 
-    for batch_index, batch in enumerate(batches):
+            # Fetch batch data without collecting all data
+            batch_df = df.filter((col('ROW_NUM') >= lower_bound) & (col('ROW_NUM') <= upper_bound))
+
+            batch_records = batch_df.collect()
+
+            if not batch_records:
+                log_message(snowflake_session, f"Batch {batch_num} is empty. Skipping.")
+                continue
+
         records = []
-        for row_index, row in enumerate(batch):
-            # Construct the record with the specific fields
+            for row in batch_records:
             record = {
-                "fields": {column: row[column] for column in pii_columns}
+                    "fields": {column.lower(): row[column.upper()] for column in pii_columns}
             }
             records.append(record)
-            # Add the plaintext primary_key to the list for WHERE clause matching
-            update_ids.append(str(row[primary_key]))
         
         body = {
             "records": records,
             "tokenization": True
         }
 
-        url = f"https://ebfc9bee4242.vault.skyflowapis.com/v1/vaults/{vault_id}/" + table_name
+            # Use a session for the API call
+            session = Session()
+            url = f"https://ebfc9bee4242.vault.skyflowapis.com/v1/vaults/{vault_id}/{table_name.lower()}"
         headers = {
             "Authorization": "Bearer " + auth_token
         }
@@ -474,33 +451,56 @@ def SKYFLOW_TOKENIZE_TABLE(snowflake_session, vault_name, table_name, primary_ke
         response = session.post(url, json=body, headers=headers)
         response_as_json = response.json()
         
-        # Check if 'records' key exists in the response
         if "records" in response_as_json:
-            # Construct the CASE expressions for each field using update_ids
-            for i, record in enumerate(response_as_json["records"]):
-                # Use the index to find the corresponding primary_key from update_ids
-                id_index = batch_index * batch_size + i
-                primary_key_value = update_ids[id_index]
-                for field, token in record["tokens"].items():
-                    case_expression = f"WHEN '{primary_key_value}' THEN '{token}'"
-                    case_expressions[field].append(case_expression)
+                batch_mapping_data = []
+                for original_record, tokenized_record in zip(records, response_as_json["records"]):
+                    primary_key_value = original_record["fields"][primary_key_lower]
+                    for field, token in tokenized_record.get("tokens", {}).items():
+                        batch_mapping_data.append((primary_key_value, field, token))
                     
-                    # Check if the limit is reached, then execute the update
-                    if len(case_expressions[field]) >= 10000:  # Set to one less than the limit to account for the current expression
-                        sql_command = f"UPDATE {table_name} SET {field} = CASE {primary_key} {' '.join(case_expressions[field])} END"
-                        execute_update(sql_command, update_ids[:10000])
-                        # Reset the expressions and primary_key values for the next batch
-                        case_expressions[field] = case_expressions[field][10000:]
-                        update_ids = update_ids[10000:]
+                # Append to the mapping_data list
+                mapping_data.extend(batch_mapping_data)
+                log_message(snowflake_session, f"Batch {batch_num} processed successfully.")
         else:
-            print("Key 'records' not found in the response.")
-            return "Key 'records' not found in the response."
+                error_msg = f"Key 'records' not found in the response for batch {batch_num}. Response: {response_as_json}"
+                log_message(snowflake_session, error_msg)
+                raise Exception(error_msg)
+        except Exception as e:
+            log_message(snowflake_session, f"Exception in batch {batch_num}: {e}")
+            raise  # Re-raise the exception to halt execution
 
-    # Execute any remaining updates
-    for field in case_expressions:
-        if case_expressions[field]:
-            sql_command = f"UPDATE {table_name} SET {field} = CASE {primary_key} {' '.join(case_expressions[field])} END"
-            execute_update(sql_command, update_ids)
+    if not mapping_data:
+        return "No data to update."
+
+    # Create a mapping table to hold the mapping
+    mapping_schema = [primary_key_lower, "FIELD", "TOKEN"]
+    mapping_df = snowflake_session.create_dataframe(mapping_data, schema=mapping_schema)
+    mapping_table_name = f"TOKEN_MAPPING_{table_name}_{int(time.time())}"
+    mapping_df.write.mode("overwrite").save_as_table(mapping_table_name)
+
+    # Prepare the update statement using JOINs
+    update_fields = [f'"{field.upper()}" = m."{field}_token"' for field in pii_columns if field != primary_key_lower]
+    set_clause = ", ".join(update_fields)
+
+    select_fields = [f"MAX(CASE WHEN FIELD = '{field}' THEN TOKEN END) AS \"{field}_token\"" for field in pii_columns if field != primary_key_lower]
+    select_clause = ", ".join(select_fields)
+
+    # Perform the update using a JOIN
+    snowflake_session.sql(
+        f'''
+        UPDATE "{table_name}" AS t
+        SET {set_clause}
+        FROM (
+            SELECT "{primary_key_upper}", {select_clause}
+            FROM "{mapping_table_name}"
+            GROUP BY "{primary_key_upper}"
+        ) AS m
+        WHERE t."{primary_key_upper}" = m."{primary_key_upper}"
+        '''
+    ).collect()
+
+    # Drop the mapping table
+    snowflake_session.sql(f'DROP TABLE IF EXISTS "{mapping_table_name}"').collect()
 
     # Retrieve the current warehouse from the session
     warehouse_name = snowflake_session.sql("SELECT CURRENT_WAREHOUSE()").collect()[0][0]
@@ -511,13 +511,13 @@ def SKYFLOW_TOKENIZE_TABLE(snowflake_session, vault_name, table_name, primary_ke
 
     # Create or replace the stream and task for continuous tokenization
     # Create the stream
-    snowflake_session.sql(f"""
+    snowflake_session.sql(f'''
         CREATE OR REPLACE STREAM SKYFLOW_PII_STREAM_{table_name}
         ON TABLE {table_name}
-    """).collect()
+    ''').collect()
     
     # Create the task using the current warehouse
-    snowflake_session.sql(f"""
+    snowflake_session.sql(f'''
         CREATE OR REPLACE TASK SKYFLOW_PII_STREAM_{table_name}_TASK
         WAREHOUSE = '{warehouse_name}'
         SCHEDULE = '1 MINUTE'
@@ -528,14 +528,14 @@ def SKYFLOW_TOKENIZE_TABLE(snowflake_session, vault_name, table_name, primary_ke
             '{primary_key}',
             '{pii_fields_delimited}'
         )
-    """).collect()
+    ''').collect()
     
     # Resume the task
-    snowflake_session.sql(f"""
+    snowflake_session.sql(f'''
         ALTER TASK SKYFLOW_PII_STREAM_{table_name}_TASK RESUME
-    """).collect()
+    ''').collect()
 
-    return "Tokenization completed successfully"
+    return f"Tokenization for table {table_name} completed successfully!"
 
 $$;
 
