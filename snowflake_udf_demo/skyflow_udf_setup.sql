@@ -4,18 +4,17 @@ USE DATABASE SKYFLOW_DEMO;
 
 -- Step 2: Create table with PII and Non-PII columns
 CREATE OR REPLACE TABLE SKYFLOW_DEMO.PUBLIC.CUSTOMERS (
-	CUSTOMER_ID NUMBER(38,0),
+    CUSTOMER_ID NUMBER(38,0) IDENTITY(1,1),  -- Auto-incrementing column
 	NAME VARCHAR(16777216),
 	EMAIL VARCHAR(16777216),
 	PHONE VARCHAR(16777216),
     ADDRESS VARCHAR(16777216),
-    LIFETIME_PURCHASE_AMOUNT VARCHAR(16777216),
+    LIFETIME_PURCHASE_AMOUNT NUMBER(10, 2),
     CUSTOMER_SINCE VARCHAR(16777216)
 );
 
-INSERT INTO SKYFLOW_DEMO.PUBLIC.CUSTOMERS (CUSTOMER_ID, NAME, EMAIL, PHONE, ADDRESS, LIFETIME_PURCHASE_AMOUNT, CUSTOMER_SINCE)
+INSERT INTO SKYFLOW_DEMO.PUBLIC.CUSTOMERS (NAME, EMAIL, PHONE, ADDRESS, LIFETIME_PURCHASE_AMOUNT, CUSTOMER_SINCE)
 SELECT 
-    SEQ4() AS CUSTOMER_ID,
 
     -- Simplified name generation
     CONCAT(
@@ -60,7 +59,7 @@ SELECT
     ) AS ADDRESS,
 
     -- Random lifetime purchase amount
-    CONCAT('$', TO_VARCHAR(ROUND(UNIFORM(0, 10000, RANDOM())::NUMERIC(10,2), 2))) AS LIFETIME_PURCHASE_AMOUNT,
+    ROUND(UNIFORM(0, 10000, RANDOM())::NUMERIC(10,2), 2) AS LIFETIME_PURCHASE_AMOUNT,
 
     -- Random 'customer since' date
     CONCAT(UNIFORM(2000, 2022, RANDOM()), '-', 
@@ -189,130 +188,297 @@ def GET_USER_ID_BY_EMAIL(auth_token, user_email):
     return user_response["users"][0]["ID"]   
     
 def SKYFLOW_CREATE_VAULT(auth_token, vault_name, table_name, primary_key, pii_fields_delimited, vault_owner_email):
+    import json  # Ensure json module is imported
     # Split the comma-separated fields into a list
     pii_fields = pii_fields_delimited.split(',')
     
-    # Initialize an list with skyflow_id and primary_key to start, pii fields will be appended
-    field_blocks = [
-                        {
-                            "name": "skyflow_id",
+    # Define a dictionary mapping field names to their configurations
+    field_configurations = {
+        'NAME': {
                             "datatype": "DT_STRING",
-            "isArray": False,
-                            "tags": [
-                                {
-                                    "name": "skyflow.options.default_dlp_policy",
-                                    "values": [
-                                        "PLAIN_TEXT"
-                                    ]
-                                },
-                                {
-                                    "name": "skyflow.options.operation",
-                                    "values": [
-                                        "ALL_OP"
-                                    ]
-                                },
-                                {
-                                    "name": "skyflow.options.sensitivity",
-                                    "values": [
-                                        "LOW"
-                                    ]
-                                },
-                                {
-                                    "name": "skyflow.options.data_type",
-                                    "values": [
-                                        "skyflow.SkyflowID"
-                                    ]
-                                },
-                                {
-                                    "name": "skyflow.options.description",
-                                    "values": [
-                                        "Skyflow defined Primary Key"
-                                    ]
-                                },
-                                {
-                                    "name": "skyflow.options.display_name",
-                                    "values": [
-                                        "Skyflow ID"
-                                    ]
-                                }
-                            ],
-                            "index": 0
-                        },
-                        {
-            "name": primary_key.lower(),
-                            "datatype": "DT_INT32",
-            "isArray": False,
-                            "tags": [
-                                {
-                                    "name": "skyflow.options.default_dlp_policy",
-                                    "values": [
-                                        "PLAIN_TEXT"
-                                    ]
-                                },
-                                {
-                                    "name": "skyflow.options.operation",
-                                    "values": [
-                                        "ALL_OP"
-                                    ]
-                                },
-                                {
-                                    "name": "skyflow.options.unique",
-                                    "values": [
-                                        "true"
-                                    ]
-                                },
-                                {
-                                    "name": "skyflow.options.display_name",
-                                    "values": [
-                        primary_key.lower()
-                                    ]
-                                }
-                            ],
-                            "index": 0
-        }
-    ]
-    
-    # Loop over each field in the pii_fields list and create a field block
-    for field in pii_fields:
-        field_block = {
-            "name": field.lower(),
-                            "datatype": "DT_STRING",
-            "isArray": False,
                             "tags": [
                                 {
                                     "name": "skyflow.options.default_dlp_policy",
                     "values": ["MASK"]
+                },
+                {
+                    "name": "skyflow.options.find_pattern",
+                    "values": ["(.).*(.{2})"]
+                },
+                {
+                    "name": "skyflow.options.replace_pattern",
+                    "values": ["${1}***${2}"]
+                },
+                {
+                    "name": "skyflow.options.identifiability",
+                    "values": ["MODERATE_IDENTIFIABILITY"]
+                                },
+                                {
+                                    "name": "skyflow.options.operation",
+                    "values": ["EXACT_MATCH"]
+                },
+                {
+                    "name": "skyflow.options.default_token_policy",
+                    "values": ["DETERMINISTIC_UUID"]
+                },
+                {
+                    "name": "skyflow.options.configuration_tags",
+                    "values": ["NULLABLE"]
+                },
+                {
+                    "name": "skyflow.options.personal_information_type",
+                    "values": ["PII", "PHI"]
+                },
+                {
+                    "name": "skyflow.options.privacy_law",
+                    "values": ["GDPR", "CCPA", "HIPAA"]
+                                },
+                                {
+                    "name": "skyflow.options.description",
+                    "values": ["An individual's first, middle, or last name"]
+                },
+                {
+                    "name": "skyflow.options.display_name",
+                    "values": ["name"]
+                }
+            ]
+        },
+        'EMAIL': {
+            "datatype": "DT_STRING",
+            "tags": [
+                {
+                    "name": "skyflow.options.default_dlp_policy",
+                    "values": ["MASK"]
+                },
+                {
+                    "name": "skyflow.options.find_pattern",
+                    "values": ["^(.).*?(.)?@(.+)$"]
+                },
+                {
+                    "name": "skyflow.options.replace_pattern",
+                    "values": ["$1******$2@$3"]
+                },
+                {
+                    "name": "skyflow.options.identifiability",
+                    "values": ["HIGH_IDENTIFIABILITY"]
+                },
+                {
+                    "name": "skyflow.options.operation",
+                    "values": ["EXACT_MATCH"]
+                },
+                {
+                    "name": "skyflow.options.default_token_policy",
+                    "values": ["DETERMINISTIC_FPT"]
+                },
+                {
+                    "name": "skyflow.options.format_preserving_regex",
+                    "values": ["^([a-z]{20})@([a-z]{10})\\.com$"]
+                },
+                {
+                    "name": "skyflow.options.personal_information_type",
+                    "values": ["PII", "PHI"]
+                },
+                {
+                    "name": "skyflow.options.privacy_law",
+                    "values": ["GDPR", "CCPA", "HIPAA"]
+                                },
+                                {
+                                    "name": "skyflow.options.data_type",
+                    "values": ["skyflow.Email"]
+                                },
+                                {
+                                    "name": "skyflow.options.description",
+                    "values": ["An email address"]
+                                },
+                                {
+                                    "name": "skyflow.options.display_name",
+                    "values": ["email"]
+                                }
+            ]
+                        },
+        'PHONE': {
+            "datatype": "DT_STRING",
+                            "tags": [
+                                {
+                                    "name": "skyflow.options.default_dlp_policy",
+                    "values": ["MASK"]
+                },
+                {
+                    "name": "skyflow.options.find_pattern",
+                    "values": [".*([0-9]{4})"]
+                },
+                {
+                    "name": "skyflow.options.replace_pattern",
+                    "values": ["XXXXXX${1}"]
+                },
+                {
+                    "name": "skyflow.options.identifiability",
+                    "values": ["HIGH_IDENTIFIABILITY"]
+                                },
+                                {
+                                    "name": "skyflow.options.operation",
+                    "values": ["EXACT_MATCH"]
+                },
+                {
+                    "name": "skyflow.options.default_token_policy",
+                    "values": ["DETERMINISTIC_FPT"]
+                },
+                {
+                    "name": "skyflow.options.configuration_tags",
+                    "values": ["NULLABLE"]
+                },
+                {
+                    "name": "skyflow.options.personal_information_type",
+                    "values": ["PII", "PHI"]
+                },
+                {
+                    "name": "skyflow.options.privacy_law",
+                    "values": ["GDPR", "CCPA", "HIPAA"]
+                                },
+                                {
+                    "name": "skyflow.options.description",
+                    "values": ["Details about a phone number"]
+                },
+                {
+                    "name": "skyflow.options.display_name",
+                    "values": ["phone"]
+                }
+            ]
+        },
+        'ADDRESS': {
+            "datatype": "DT_STRING",
+            "tags": [
+                {
+                    "name": "skyflow.options.default_dlp_policy",
+                    "values": ["MASK"]
+                },
+                {
+                    "name": "skyflow.options.find_pattern",
+                    "values": ["(.).*(.{2})"]
+                },
+                {
+                    "name": "skyflow.options.replace_pattern",
+                    "values": ["${1}***${2}"]
+                },
+                {
+                    "name": "skyflow.options.identifiability",
+                    "values": ["HIGH_IDENTIFIABILITY"]
+                },
+                {
+                    "name": "skyflow.options.operation",
+                    "values": ["EXACT_MATCH"]
+                },
+                {
+                    "name": "skyflow.options.default_token_policy",
+                    "values": ["DETERMINISTIC_UUID"]
+                },
+                {
+                    "name": "skyflow.options.configuration_tags",
+                    "values": ["NULLABLE"]
+                },
+                {
+                    "name": "skyflow.options.personal_information_type",
+                    "values": ["PII", "PHI"]
+                },
+                {
+                    "name": "skyflow.options.privacy_law",
+                    "values": ["GDPR", "CCPA", "HIPAA"]
+                },
+                {
+                    "name": "skyflow.options.description",
+                    "values": ["A generic street address usually contains the house number and street name"]
+                                },
+                                {
+                                    "name": "skyflow.options.display_name",
+                    "values": ["address"]
+                                }
+            ]
+        }
+        # Add configurations for other fields as needed
+    }
+    
+    # Initialize a list with skyflow_id and primary_key to start
+    field_blocks = [
+        {
+            "name": "skyflow_id",
+                            "datatype": "DT_STRING",
+            "isArray": False,
+                            "tags": [
+                                {
+                                    "name": "skyflow.options.default_dlp_policy",
+                    "values": ["PLAIN_TEXT"]
                                 },
                                 {
                                     "name": "skyflow.options.operation",
                     "values": ["ALL_OP"]
                                 },
                                 {
-                                    "name": "skyflow.options.default_token_policy",
-                    "values": ["DETERMINISTIC_FPT"]
+                    "name": "skyflow.options.sensitivity",
+                    "values": ["LOW"]
                                 },
                                 {
-                                    "name": "skyflow.options.index",
-                    "values": ["true"]
+                    "name": "skyflow.options.data_type",
+                    "values": ["skyflow.SkyflowID"]
                                 },
                                 {
-                                    "name": "skyflow.options.configuration_tags",
-                    "values": ["NULLABLE"]
+                    "name": "skyflow.options.description",
+                    "values": ["Skyflow defined Primary Key"]
                                 },
                                 {
                                     "name": "skyflow.options.display_name",
-                    "values": [field.lower()]
+                    "values": ["Skyflow ID"]
                                 }
                             ],
                             "index": 0
-                        }
-        field_blocks.append(field_block)
+        },
+        {
+            "name": primary_key.lower(),
+            "datatype": "DT_INT32",
+            "isArray": False,
+            "tags": [
+                {
+                    "name": "skyflow.options.default_dlp_policy",
+                    "values": ["PLAIN_TEXT"]
+                },
+                {
+                    "name": "skyflow.options.operation",
+                    "values": ["ALL_OP"]
+                },
+                {
+                    "name": "skyflow.options.unique",
+                    "values": ["true"]
+                },
+                {
+                    "name": "skyflow.options.display_name",
+                    "values": [primary_key.lower()]
+                }
+            ],
+            "index": 0
+        }
+    ]
     
-    url = "https://manage.skyflowapis.com/v1/vaults"
-    headers = {
-        "Authorization": "Bearer " + auth_token,
-        "X-SKYFLOW-ACCOUNT-ID": GET_ACCOUNT_ID()
-    }
+    # Loop over each field in the pii_fields list and create a field block
+    for field in pii_fields:
+        field = field.strip()  # Remove any leading/trailing whitespace
+        field_upper = field.upper()
+        field_config = field_configurations.get(field_upper)
+        
+        if field_config:
+            field_block = {
+                "name": field.lower(),
+                "datatype": field_config["datatype"],
+                "isArray": False,
+                "tags": field_config["tags"],
+                "index": 0
+            }
+            field_blocks.append(field_block)
+        else:
+            # Handle fields without specific configurations (optional)
+            # You can skip them or apply a default configuration
+            print(f"No specific configuration found for field '{field}'. Skipping.")
+            pass  # Or apply a default configuration if desired
+    
+    # Build the body for the API request
     body = {
         "name": vault_name,
         "description": "A vault for Snowflake PII",
@@ -328,34 +494,23 @@ def SKYFLOW_CREATE_VAULT(auth_token, vault_name, table_name, primary_key, pii_fi
             "tags": [
                 {
                     "name": "skyflow.options.experimental",
-                    "values": [
-                        "true"
-                    ]
+                    "values": ["true"]
                 },
                 {
                     "name": "skyflow.options.vault_main_object",
-                    "values": [
-                        "Quickstart"
-                    ]
+                    "values": ["Quickstart"]
                 },
                 {
                     "name": "skyflow.options.query_interface",
-                    "values": [
-                        "REST",
-                        "SQL"
-                    ]
+                    "values": ["REST", "SQL"]
                 },
                 {
                     "name": "skyflow.options.env_name",
-                    "values": [
-                        "ALL_ENV"
-                    ]
+                    "values": ["ALL_ENV"]
                 },
                 {
                     "name": "skyflow.options.display_name",
-                    "values": [
-                        "Quickstart"
-                    ]
+                    "values": ["Quickstart"]
                 }
             ]
         },
@@ -371,7 +526,19 @@ def SKYFLOW_CREATE_VAULT(auth_token, vault_name, table_name, primary_key, pii_fi
             }
         ]
     }
+    
+    url = "https://manage.skyflowapis.com/v1/vaults"
+    headers = {
+        "Authorization": "Bearer " + auth_token,
+        "X-SKYFLOW-ACCOUNT-ID": GET_ACCOUNT_ID()
+    }
+    
     response = session.post(url, json=body, headers=headers)
+    
+    # Check for errors in the response
+    if response.status_code != 200:
+        raise Exception(f"Failed to create vault: {response.text}")
+    
     vault_response = json.loads(response.text)
     
     return vault_response["ID"]
@@ -669,6 +836,134 @@ def SKYFLOW_DETOKENIZE(token_df):
 
 $$;
 
+CREATE OR REPLACE FUNCTION SKYFLOW_DETOKENIZE(token VARCHAR, redaction_level STRING)
+RETURNS STRING
+LANGUAGE PYTHON
+RUNTIME_VERSION = 3.8
+HANDLER = 'SKYFLOW_DETOKENIZE'
+EXTERNAL_ACCESS_INTEGRATIONS = (SKYFLOW_EXTERNAL_ACCESS_INTEGRATION)
+PACKAGES = ('pandas', 'pyjwt', 'cryptography', 'requests', 'simplejson')
+SECRETS = ('cred' = SKYFLOW_VAULT_SECRET)
+AS
+$$
+import pandas
+import _snowflake
+import simplejson as json
+import jwt
+import requests 
+import time
+from _snowflake import vectorized
+import logging
+
+# Initialize a session object at the global scope
+session = requests.Session()
+
+logger = logging.getLogger("python_logger")
+logger.setLevel(logging.INFO)
+logger.info("Logging from SKYFLOW_DETOKENIZE Python module.")
+
+# Global cache for storing the auth token and its expiry time
+AUTH_TOKEN_CACHE = {
+    'token': None,
+    'expiry': None
+}
+
+def GENERATE_AUTH_TOKEN():
+    # Check if a valid token is already in the cache
+    if AUTH_TOKEN_CACHE['token'] and AUTH_TOKEN_CACHE['expiry'] > time.time():
+        return AUTH_TOKEN_CACHE['token']
+    
+    # Existing code to generate a new token
+    credentials = json.loads(_snowflake.get_generic_secret_string('cred'), strict=False)
+    claims = {
+       "iss": credentials["clientID"],
+       "key": credentials["keyID"], 
+       "aud": credentials["tokenURI"], 
+       "exp": int(time.time()) + (3600), # JWT expires in Now + 60 minutes
+       "sub": credentials["clientID"], 
+    }
+    signedJWT = jwt.encode(claims, credentials["privateKey"], algorithm='RS256')
+    body = {
+       'grant_type': 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+       'assertion': signedJWT,
+    }
+    tokenURI = credentials["tokenURI"]
+    
+    # Use the persistent session to send the request
+    r = session.post(tokenURI, json=body)
+    auth = json.loads(r.text)
+    
+    # Store the new token and its expiry time in the cache
+    AUTH_TOKEN_CACHE['token'] = auth["accessToken"]
+    AUTH_TOKEN_CACHE['expiry'] = time.time() + (3600) # Assuming the token expires in 1 hour
+    
+    return auth["accessToken"]
+
+def GET_ACCOUNT_ID():
+    return "hd873b584c194159a38f1fb0ed18bbee"
+
+def GET_WORKSPACE_ID(auth_token):
+    url = f"https://manage.skyflowapis.com/v1/workspaces"
+    headers = {
+        "Authorization": "Bearer " + auth_token,
+        "X-SKYFLOW-ACCOUNT-ID": GET_ACCOUNT_ID()
+    }
+
+    response = session.get(url, headers=headers)
+    workspace_response = json.loads(response.text)
+    
+    return workspace_response["workspaces"][0]["ID"]
+
+def GET_VAULT_ID_BY_NAME(auth_token, vault_name):
+    workspace_id = GET_WORKSPACE_ID(auth_token)
+    url = f"https://manage.skyflowapis.com/v1/vaults?filterOps.name={vault_name}&workspaceID={workspace_id}"
+    headers = {
+        "Authorization": "Bearer " + auth_token,
+        "X-SKYFLOW-ACCOUNT-ID": GET_ACCOUNT_ID()
+    }
+
+    response = session.get(url, headers=headers)
+    vault_response = json.loads(response.text)
+    
+    return vault_response["vaults"][0]["ID"]
+
+@vectorized(input=pandas.DataFrame, max_batch_size=25)
+def SKYFLOW_DETOKENIZE(token_df):
+    auth_token = GENERATE_AUTH_TOKEN()
+    vault_id = GET_VAULT_ID_BY_NAME(auth_token, 'SkyflowVault')
+
+    # token_df has two columns: [token, redaction_level]
+    token_values = token_df.apply(lambda row: {'token': row[0], 'redaction': row[1]}, axis=1).tolist()
+    
+    body = {
+        'detokenizationParameters': token_values
+    }
+
+    url = f"https://ebfc9bee4242.vault.skyflowapis.com/v1/vaults/{vault_id}/detokenize"
+    headers = { 'Authorization': 'Bearer ' + auth_token }
+
+    # Use the persistent session to send the request
+    response = session.post(url, json=body, headers=headers)
+    
+    # Check if the request was successful
+    if response.status_code != 200:
+        logger.error(f"Detokenization request failed with status code {response.status_code}")
+        return pandas.Series([None] * len(token_df))  # Return a series of None values
+
+    response_as_json = response.json()
+
+    # Check if 'records' key exists in the response
+    if 'records' not in response_as_json:
+        logger.error("'records' key not found in the response.")
+        return pandas.Series([None] * len(token_df))  # Return a series of None values
+
+    # Convert the JSON response into a DataFrame Series.
+    data = [record['value'] for record in response_as_json['records']]
+
+    return pandas.Series(data)
+
+$$;
+
 -- Step 8: Create a function for processing PII updates from a snowflake stream
 CREATE OR REPLACE PROCEDURE SKYFLOW_PROCESS_PII(vault_id VARCHAR, table_name VARCHAR, primary_key VARCHAR, pii_fields STRING)
 RETURNS STRING
@@ -876,3 +1171,100 @@ def SKYFLOW_PROCESS_PII(snowflake_session, vault_id, table_name, primary_key, pi
     return "Changes processed"
 
 $$;
+
+
+-- Create roles
+CREATE ROLE AUDITOR;
+CREATE ROLE BUSINESS_ANALYST;
+CREATE ROLE DATA_ENGINEER;
+
+-- Grant usage on database SKYFLOW_DEMO to roles
+GRANT USAGE ON DATABASE SKYFLOW_DEMO TO ROLE AUDITOR;
+GRANT USAGE ON DATABASE SKYFLOW_DEMO TO ROLE BUSINESS_ANALYST;
+GRANT USAGE ON DATABASE SKYFLOW_DEMO TO ROLE DATA_ENGINEER;
+
+-- Grant usage on schema SKYFLOW_DEMO.PUBLIC to roles
+GRANT USAGE ON SCHEMA SKYFLOW_DEMO.PUBLIC TO ROLE AUDITOR;
+GRANT USAGE ON SCHEMA SKYFLOW_DEMO.PUBLIC TO ROLE BUSINESS_ANALYST;
+GRANT USAGE ON SCHEMA SKYFLOW_DEMO.PUBLIC TO ROLE DATA_ENGINEER;
+
+-- Grant access to table SKYFLOW_DEMO.PUBLIC.CUSTOMERS to roles
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE SKYFLOW_DEMO.PUBLIC.CUSTOMERS TO ROLE AUDITOR;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE SKYFLOW_DEMO.PUBLIC.CUSTOMERS TO ROLE BUSINESS_ANALYST;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE SKYFLOW_DEMO.PUBLIC.CUSTOMERS TO ROLE DATA_ENGINEER;
+
+CREATE OR REPLACE MASKING POLICY DETOKENIZE_COLUMN AS (VAL STRING) RETURNS STRING ->
+  CASE
+    WHEN CURRENT_ROLE() IN ('AUDITOR') THEN SKYFLOW_DETOKENIZE(VAL, 'PLAIN_TEXT')
+    WHEN CURRENT_ROLE() IN ('DATA_ENGINEER') THEN SKYFLOW_DETOKENIZE(VAL, 'MASKED')
+    WHEN CURRENT_ROLE() IN ('BUSINESS_ANALYST') THEN SKYFLOW_DETOKENIZE(VAL, 'REDACTED')
+    ELSE VAL
+  END;
+
+ALTER TABLE IF EXISTS CUSTOMERS MODIFY COLUMN NAME SET MASKING POLICY DETOKENIZE_COLUMN;
+ALTER TABLE IF EXISTS CUSTOMERS MODIFY COLUMN EMAIL SET MASKING POLICY DETOKENIZE_COLUMN;
+ALTER TABLE IF EXISTS CUSTOMERS MODIFY COLUMN PHONE SET MASKING POLICY DETOKENIZE_COLUMN;
+ALTER TABLE IF EXISTS CUSTOMERS MODIFY COLUMN ADDRESS SET MASKING POLICY DETOKENIZE_COLUMN;
+
+CREATE OR REPLACE PROCEDURE GRANT_WAREHOUSE_ACCESS(role_name STRING)
+RETURNS STRING
+LANGUAGE PYTHON
+RUNTIME_VERSION = 3.8
+HANDLER = 'GRANT_WAREHOUSE_ACCESS'
+PACKAGES = ('snowflake-snowpark-python', 'pyjwt', 'cryptography', 'requests', 'simplejson')
+EXECUTE AS CALLER
+AS
+$$
+def GRANT_WAREHOUSE_ACCESS(session, role_name):
+    # Query to get the current active warehouse
+    current_warehouse_result = session.sql("SELECT CURRENT_WAREHOUSE()").collect()
+    
+    # Fetch the result from the query
+    current_warehouse = current_warehouse_result[0][0] if current_warehouse_result else None
+    
+    if not current_warehouse:
+        raise Exception("No current warehouse set!")
+    
+    # Prepare the dynamic grant statement
+    grant_query = f"GRANT USAGE ON WAREHOUSE {current_warehouse} TO ROLE {role_name}"
+    
+    # Execute the grant query
+    session.sql(grant_query).collect()
+    
+    # Return a success message
+    return f"Granted usage on warehouse {current_warehouse} to the role {role_name}."
+$$;
+
+
+CALL GRANT_WAREHOUSE_ACCESS('AUDITOR');
+CALL GRANT_WAREHOUSE_ACCESS('BUSINESS_ANALYST');
+CALL GRANT_WAREHOUSE_ACCESS('DATA_ENGINEER');
+
+CREATE OR REPLACE PROCEDURE GRANT_ROLE_TO_CURRENT_USER(role_name STRING)
+RETURNS STRING
+LANGUAGE PYTHON
+RUNTIME_VERSION = 3.8
+HANDLER = 'GRANT_ROLE_TO_CURRENT_USER'
+PACKAGES = ('snowflake-snowpark-python', 'pyjwt', 'cryptography', 'requests', 'simplejson')
+EXECUTE AS CALLER
+AS
+$$
+def GRANT_ROLE_TO_CURRENT_USER(session, role_name):
+    # Get the current user
+    current_user_query = "SELECT CURRENT_USER()"
+    current_user_result = session.sql(current_user_query).collect()
+    current_user = current_user_result[0][0]
+
+    # Prepare the grant role query
+    grant_role_query = f"GRANT ROLE {role_name} TO USER {current_user}"
+    
+    # Execute the grant role query
+    session.sql(grant_role_query).collect()
+    
+    # Return success message
+    return f"Granted role {role_name} to user {current_user}."
+$$;
+
+CALL GRANT_ROLE_TO_CURRENT_USER('AUDITOR');
+CALL GRANT_ROLE_TO_CURRENT_USER('BUSINESS_ANALYST');
+CALL GRANT_ROLE_TO_CURRENT_USER('DATA_ENGINEER');
