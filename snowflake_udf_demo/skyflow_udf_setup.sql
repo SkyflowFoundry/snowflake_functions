@@ -13,6 +13,12 @@ CREATE OR REPLACE TABLE SKYFLOW_DEMO.PUBLIC.CUSTOMERS (
     CUSTOMER_SINCE VARCHAR(16777216)
 );
 
+CREATE OR REPLACE TABLE SKYFLOW_DEMO.PUBLIC.SKYFLOW_CACHE (
+    key VARCHAR PRIMARY KEY,
+    value VARCHAR, -- The cached value, stored as a string
+    expiry TIMESTAMP_LTZ -- Expiry time, after which the cache should be considered invalid
+);
+
 INSERT INTO SKYFLOW_DEMO.PUBLIC.CUSTOMERS (NAME, EMAIL, PHONE, ADDRESS, LIFETIME_PURCHASE_AMOUNT, CUSTOMER_SINCE)
 SELECT 
 
@@ -89,7 +95,7 @@ CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION SKYFLOW_EXTERNAL_ACCESS_INTEGRATIO
  ENABLED = true;
 
  
--- Step 6: Create Stored Procedure for table tokenization. Skyflow table and column names should match the snowflake table and column names. Include PII columns only.
+-- Step 6: Create Stored Procedure for table tokenization.
 CREATE OR REPLACE PROCEDURE SKYFLOW_TOKENIZE_TABLE(
     vault_name VARCHAR,
     table_name VARCHAR,
@@ -113,34 +119,69 @@ import time
 import logging
 import re
 from urllib.parse import quote_plus
-from snowflake.snowpark.functions import col
+from snowflake.snowpark import Session
+from snowflake.snowpark.functions import col, row_number
+from snowflake.snowpark.window import Window
+from datetime import datetime
 
-# Initialize a session object at the global scope
-session = requests.Session()
-
+# Initialize logging
 logger = logging.getLogger("python_logger")
 logger.setLevel(logging.INFO)
 logger.info("Logging from SKYFLOW_TOKENIZE_TABLE Python module.")
 
-# Global cache for storing the auth token and its expiry time
-AUTH_TOKEN_CACHE = {
-    'token': None,
-    'expiry': None
-}
+def GET_CACHED_AUTH_TOKEN(snowflake_session, key):
+    try:
+        result = snowflake_session.sql(f"SELECT value, expiry FROM skyflow_cache WHERE key = '{key}'").collect()
+        if result:
+            value, expiry = result[0]
+            if expiry is None or expiry.timestamp() > time.time():  # Convert expiry to float for comparison
+                return value
+        return None
+    except Exception as e:
+        logger.error(f"Error retrieving cached value for key '{key}': {e}")
+        raise
 
-def GENERATE_AUTH_TOKEN():
-    # Check if a valid token is already in the cache
-    if AUTH_TOKEN_CACHE['token'] and AUTH_TOKEN_CACHE['expiry'] > time.time():
-        return AUTH_TOKEN_CACHE['token']
+def STORE_AUTH_TOKEN(snowflake_session, key, value, expiry=None):
+    try:
+        if expiry:
+            # Convert expiry to ISO 8601 format for TIMESTAMP_LTZ
+            expiry_iso = time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(expiry))
+            snowflake_session.sql(f"""
+                MERGE INTO skyflow_cache AS target
+                USING (SELECT '{key}' AS key, '{value}' AS value, '{expiry_iso}' AS expiry) AS source
+                ON target.key = source.key
+                WHEN MATCHED THEN UPDATE SET value = source.value, expiry = source.expiry
+                WHEN NOT MATCHED THEN INSERT (key, value, expiry) VALUES (source.key, source.value, source.expiry)
+            """).collect()
+        else:
+            snowflake_session.sql(f"""
+                MERGE INTO skyflow_cache AS target
+                USING (SELECT '{key}' AS key, '{value}' AS value) AS source
+                ON target.key = source.key
+                WHEN MATCHED THEN UPDATE SET value = source.value
+                WHEN NOT MATCHED THEN INSERT (key, value) VALUES (source.key, source.value)
+            """).collect()
+        logger.info(f"Cached value for key '{key}' updated successfully.")
+    except Exception as e:
+        logger.error(f"Error updating cached value for key '{key}': {e}")
+        raise
+
+def GENERATE_AUTH_TOKEN(snowflake_session, req_session):
+    auth_token = GET_CACHED_AUTH_TOKEN(snowflake_session, 'auth_token')
     
-    # Existing code to generate a new token
+    # If a valid token is in the cache, return it
+    if auth_token:
+        logger.info("Using cached auth_token.")
+        return auth_token
+
+    # Otherwise, generate a new one
     credentials = json.loads(_snowflake.get_generic_secret_string('cred'), strict=False)
     claims = {
-       "iss": credentials["clientID"],
-       "key": credentials["keyID"], 
-       "aud": credentials["tokenURI"], 
-       "exp": int(time.time()) + (3600), # JWT expires in Now + 60 minutes
-       "sub": credentials["clientID"], 
+        "iss": credentials["clientID"],
+        "key": credentials["keyID"], 
+        "aud": credentials["tokenURI"], 
+        "exp": int(time.time()) + 3600,  # JWT expires in Now + 60 minutes
+        "sub": credentials["clientID"], 
     }
     signedJWT = jwt.encode(claims, credentials["privateKey"], algorithm='RS256')
     body = {
@@ -149,249 +190,92 @@ def GENERATE_AUTH_TOKEN():
     }
     tokenURI = credentials["tokenURI"]
 
-    # Use the persistent session to send the request
-    r = session.post(tokenURI, json=body)
-    auth = json.loads(r.text)
-    
-    # Store the new token and its expiry time in the cache
-    AUTH_TOKEN_CACHE['token'] = auth["accessToken"]
-    AUTH_TOKEN_CACHE['expiry'] = time.time() + (3600) # Assuming the token expires in 1 hour
-    
-    return auth["accessToken"]
+    try:
+        response = req_session.post(tokenURI, json=body)
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to generate auth token: {e}")
+        raise Exception(f"Failed to generate auth token: {e}")
 
-def GET_ACCOUNT_ID():
-    return "<TODO: ACCOUNT_ID>"
+    auth = json.loads(response.text)
+    auth_token = auth["accessToken"]
+    expiry = time.time() + 3600  # Cache expiry in 1 hour
 
-def GET_WORKSPACE_ID(auth_token):
-    url = f"https://manage.skyflowapis.com/v1/workspaces"
-    headers = {
-        "Authorization": "Bearer " + auth_token,
-        "X-SKYFLOW-ACCOUNT-ID": GET_ACCOUNT_ID()
-    }
-
-    response = session.get(url, headers=headers)
-    workspace_response = json.loads(response.text)
+    # Update the cache with the new auth_token
+    STORE_AUTH_TOKEN(snowflake_session, 'auth_token', auth_token, expiry)
     
-    return workspace_response["workspaces"][0]["ID"]  
-
-def GET_USER_ID_BY_EMAIL(auth_token, user_email):
-    encoded_email = quote_plus(user_email)
-    url = f"https://manage.skyflowapis.com/v1/users?filterOps.email={encoded_email}"
-    headers = {
-        "Authorization": "Bearer " + auth_token,
-        "X-SKYFLOW-ACCOUNT-ID": GET_ACCOUNT_ID()
-    }
-
-    response = session.get(url, headers=headers)
-    user_response = json.loads(response.text)
+    logger.info("Generated and cached new auth_token.")
+    return auth_token
     
-    return user_response["users"][0]["ID"]   
-    
-def SKYFLOW_CREATE_VAULT(auth_token, vault_name, table_name, primary_key, pii_fields_delimited, vault_owner_email):
-    import json  # Ensure json module is imported
+def SKYFLOW_CREATE_VAULT(snowflake_session, auth_token, req_session, vault_name, table_name, primary_key, pii_fields_delimited, vault_owner_email):
     # Split the comma-separated fields into a list
     pii_fields = pii_fields_delimited.split(',')
     
     # Define a dictionary mapping field names to their configurations
     field_configurations = {
         'NAME': {
-                            "datatype": "DT_STRING",
-                            "tags": [
-                                {
-                                    "name": "skyflow.options.default_dlp_policy",
-                    "values": ["MASK"]
-                },
-                {
-                    "name": "skyflow.options.find_pattern",
-                    "values": ["(.).*(.{2})"]
-                },
-                {
-                    "name": "skyflow.options.replace_pattern",
-                    "values": ["${1}***${2}"]
-                },
-                {
-                    "name": "skyflow.options.identifiability",
-                    "values": ["MODERATE_IDENTIFIABILITY"]
-                                },
-                                {
-                                    "name": "skyflow.options.operation",
-                    "values": ["EXACT_MATCH"]
-                },
-                {
-                    "name": "skyflow.options.default_token_policy",
-                    "values": ["DETERMINISTIC_UUID"]
-                },
-                {
-                    "name": "skyflow.options.configuration_tags",
-                    "values": ["NULLABLE"]
-                },
-                {
-                    "name": "skyflow.options.personal_information_type",
-                    "values": ["PII", "PHI"]
-                },
-                {
-                    "name": "skyflow.options.privacy_law",
-                    "values": ["GDPR", "CCPA", "HIPAA"]
-                                },
-                                {
-                    "name": "skyflow.options.description",
-                    "values": ["An individual's first, middle, or last name"]
-                },
-                {
-                    "name": "skyflow.options.display_name",
-                    "values": ["name"]
-                }
+            "datatype": "DT_STRING",
+            "tags": [
+                {"name": "skyflow.options.default_dlp_policy", "values": ["MASK"]},
+                {"name": "skyflow.options.find_pattern", "values": ["(.).*(.{2})"]},
+                {"name": "skyflow.options.replace_pattern", "values": ["${1}***${2}"]},
+                {"name": "skyflow.options.identifiability", "values": ["MODERATE_IDENTIFIABILITY"]},
+                {"name": "skyflow.options.operation", "values": ["EXACT_MATCH"]},
+                {"name": "skyflow.options.default_token_policy", "values": ["DETERMINISTIC_UUID"]},
+                {"name": "skyflow.options.configuration_tags", "values": ["NULLABLE"]},
+                {"name": "skyflow.options.personal_information_type", "values": ["PII", "PHI"]},
+                {"name": "skyflow.options.privacy_law", "values": ["GDPR", "CCPA", "HIPAA"]},
+                {"name": "skyflow.options.description", "values": ["An individual's first, middle, or last name"]},
+                {"name": "skyflow.options.display_name", "values": ["name"]}
             ]
         },
         'EMAIL': {
             "datatype": "DT_STRING",
             "tags": [
-                {
-                    "name": "skyflow.options.default_dlp_policy",
-                    "values": ["MASK"]
-                },
-                {
-                    "name": "skyflow.options.find_pattern",
-                    "values": ["^(.).*?(.)?@(.+)$"]
-                },
-                {
-                    "name": "skyflow.options.replace_pattern",
-                    "values": ["$1******$2@$3"]
-                },
-                {
-                    "name": "skyflow.options.identifiability",
-                    "values": ["HIGH_IDENTIFIABILITY"]
-                },
-                {
-                    "name": "skyflow.options.operation",
-                    "values": ["EXACT_MATCH"]
-                },
-                {
-                    "name": "skyflow.options.default_token_policy",
-                    "values": ["DETERMINISTIC_FPT"]
-                },
-                {
-                    "name": "skyflow.options.format_preserving_regex",
-                    "values": ["^([a-z]{20})@([a-z]{10})\\.com$"]
-                },
-                {
-                    "name": "skyflow.options.personal_information_type",
-                    "values": ["PII", "PHI"]
-                },
-                {
-                    "name": "skyflow.options.privacy_law",
-                    "values": ["GDPR", "CCPA", "HIPAA"]
-                                },
-                                {
-                                    "name": "skyflow.options.data_type",
-                    "values": ["skyflow.Email"]
-                                },
-                                {
-                                    "name": "skyflow.options.description",
-                    "values": ["An email address"]
-                                },
-                                {
-                                    "name": "skyflow.options.display_name",
-                    "values": ["email"]
-                                }
+                {"name": "skyflow.options.default_dlp_policy", "values": ["MASK"]},
+                {"name": "skyflow.options.find_pattern", "values": ["^(.).*?(.)?@(.+)$"]},
+                {"name": "skyflow.options.replace_pattern", "values": ["$1******$2@$3"]},
+                {"name": "skyflow.options.identifiability", "values": ["HIGH_IDENTIFIABILITY"]},
+                {"name": "skyflow.options.operation", "values": ["EXACT_MATCH"]},
+                {"name": "skyflow.options.default_token_policy", "values": ["DETERMINISTIC_FPT"]},
+                {"name": "skyflow.options.format_preserving_regex", "values": ["^([a-z]{20})@([a-z]{10})\\.com$"]},
+                {"name": "skyflow.options.personal_information_type", "values": ["PII", "PHI"]},
+                {"name": "skyflow.options.privacy_law", "values": ["GDPR", "CCPA", "HIPAA"]},
+                {"name": "skyflow.options.data_type", "values": ["skyflow.Email"]},
+                {"name": "skyflow.options.description", "values": ["An email address"]},
+                {"name": "skyflow.options.display_name", "values": ["email"]}
             ]
                         },
         'PHONE': {
             "datatype": "DT_STRING",
                             "tags": [
-                                {
-                                    "name": "skyflow.options.default_dlp_policy",
-                    "values": ["MASK"]
-                },
-                {
-                    "name": "skyflow.options.find_pattern",
-                    "values": [".*([0-9]{4})"]
-                },
-                {
-                    "name": "skyflow.options.replace_pattern",
-                    "values": ["XXXXXX${1}"]
-                },
-                {
-                    "name": "skyflow.options.identifiability",
-                    "values": ["HIGH_IDENTIFIABILITY"]
-                                },
-                                {
-                                    "name": "skyflow.options.operation",
-                    "values": ["EXACT_MATCH"]
-                },
-                {
-                    "name": "skyflow.options.default_token_policy",
-                    "values": ["DETERMINISTIC_FPT"]
-                },
-                {
-                    "name": "skyflow.options.configuration_tags",
-                    "values": ["NULLABLE"]
-                },
-                {
-                    "name": "skyflow.options.personal_information_type",
-                    "values": ["PII", "PHI"]
-                },
-                {
-                    "name": "skyflow.options.privacy_law",
-                    "values": ["GDPR", "CCPA", "HIPAA"]
-                                },
-                                {
-                    "name": "skyflow.options.description",
-                    "values": ["Details about a phone number"]
-                },
-                {
-                    "name": "skyflow.options.display_name",
-                    "values": ["phone"]
-                }
+                {"name": "skyflow.options.default_dlp_policy", "values": ["MASK"]},
+                {"name": "skyflow.options.find_pattern", "values": [".*([0-9]{4})"]},
+                {"name": "skyflow.options.replace_pattern", "values": ["XXXXXX${1}"]},
+                {"name": "skyflow.options.identifiability", "values": ["HIGH_IDENTIFIABILITY"]},
+                {"name": "skyflow.options.operation", "values": ["EXACT_MATCH"]},
+                {"name": "skyflow.options.default_token_policy", "values": ["DETERMINISTIC_FPT"]},
+                {"name": "skyflow.options.configuration_tags", "values": ["NULLABLE"]},
+                {"name": "skyflow.options.personal_information_type", "values": ["PII", "PHI"]},
+                {"name": "skyflow.options.privacy_law", "values": ["GDPR", "CCPA", "HIPAA"]},
+                {"name": "skyflow.options.description", "values": ["Details about a phone number"]},
+                {"name": "skyflow.options.display_name", "values": ["phone"]}
             ]
         },
         'ADDRESS': {
             "datatype": "DT_STRING",
             "tags": [
-                {
-                    "name": "skyflow.options.default_dlp_policy",
-                    "values": ["MASK"]
-                },
-                {
-                    "name": "skyflow.options.find_pattern",
-                    "values": ["(.).*(.{2})"]
-                },
-                {
-                    "name": "skyflow.options.replace_pattern",
-                    "values": ["${1}***${2}"]
-                },
-                {
-                    "name": "skyflow.options.identifiability",
-                    "values": ["HIGH_IDENTIFIABILITY"]
-                },
-                {
-                    "name": "skyflow.options.operation",
-                    "values": ["EXACT_MATCH"]
-                },
-                {
-                    "name": "skyflow.options.default_token_policy",
-                    "values": ["DETERMINISTIC_UUID"]
-                },
-                {
-                    "name": "skyflow.options.configuration_tags",
-                    "values": ["NULLABLE"]
-                },
-                {
-                    "name": "skyflow.options.personal_information_type",
-                    "values": ["PII", "PHI"]
-                },
-                {
-                    "name": "skyflow.options.privacy_law",
-                    "values": ["GDPR", "CCPA", "HIPAA"]
-                },
-                {
-                    "name": "skyflow.options.description",
-                    "values": ["A generic street address usually contains the house number and street name"]
-                                },
-                                {
-                                    "name": "skyflow.options.display_name",
-                    "values": ["address"]
-                                }
+                {"name": "skyflow.options.default_dlp_policy", "values": ["MASK"]},
+                {"name": "skyflow.options.find_pattern", "values": ["(.).*(.{2})"]},
+                {"name": "skyflow.options.replace_pattern", "values": ["${1}***${2}"]},
+                {"name": "skyflow.options.identifiability", "values": ["HIGH_IDENTIFIABILITY"]},
+                {"name": "skyflow.options.operation", "values": ["EXACT_MATCH"]},
+                {"name": "skyflow.options.default_token_policy", "values": ["DETERMINISTIC_UUID"]},
+                {"name": "skyflow.options.configuration_tags", "values": ["NULLABLE"]},
+                {"name": "skyflow.options.personal_information_type", "values": ["PII", "PHI"]},
+                {"name": "skyflow.options.privacy_law", "values": ["GDPR", "CCPA", "HIPAA"]},
+                {"name": "skyflow.options.description", "values": ["A generic street address usually contains the house number and street name"]},
+                {"name": "skyflow.options.display_name", "values": ["address"]}
             ]
         }
         # Add configurations for other fields as needed
@@ -401,33 +285,15 @@ def SKYFLOW_CREATE_VAULT(auth_token, vault_name, table_name, primary_key, pii_fi
     field_blocks = [
         {
             "name": "skyflow_id",
-                            "datatype": "DT_STRING",
+            "datatype": "DT_STRING",
             "isArray": False,
                             "tags": [
-                                {
-                                    "name": "skyflow.options.default_dlp_policy",
-                    "values": ["PLAIN_TEXT"]
-                                },
-                                {
-                                    "name": "skyflow.options.operation",
-                    "values": ["ALL_OP"]
-                                },
-                                {
-                    "name": "skyflow.options.sensitivity",
-                    "values": ["LOW"]
-                                },
-                                {
-                    "name": "skyflow.options.data_type",
-                    "values": ["skyflow.SkyflowID"]
-                                },
-                                {
-                    "name": "skyflow.options.description",
-                    "values": ["Skyflow defined Primary Key"]
-                                },
-                                {
-                                    "name": "skyflow.options.display_name",
-                    "values": ["Skyflow ID"]
-                                }
+                {"name": "skyflow.options.default_dlp_policy", "values": ["PLAIN_TEXT"]},
+                {"name": "skyflow.options.operation", "values": ["ALL_OP"]},
+                {"name": "skyflow.options.sensitivity", "values": ["LOW"]},
+                {"name": "skyflow.options.data_type", "values": ["skyflow.SkyflowID"]},
+                {"name": "skyflow.options.description", "values": ["Skyflow defined Primary Key"]},
+                {"name": "skyflow.options.display_name", "values": ["Skyflow ID"]}
                             ],
                             "index": 0
         },
@@ -436,22 +302,10 @@ def SKYFLOW_CREATE_VAULT(auth_token, vault_name, table_name, primary_key, pii_fi
             "datatype": "DT_INT32",
             "isArray": False,
             "tags": [
-                {
-                    "name": "skyflow.options.default_dlp_policy",
-                    "values": ["PLAIN_TEXT"]
-                },
-                {
-                    "name": "skyflow.options.operation",
-                    "values": ["ALL_OP"]
-                },
-                {
-                    "name": "skyflow.options.unique",
-                    "values": ["true"]
-                },
-                {
-                    "name": "skyflow.options.display_name",
-                    "values": [primary_key.lower()]
-                }
+                {"name": "skyflow.options.default_dlp_policy", "values": ["PLAIN_TEXT"]},
+                {"name": "skyflow.options.operation", "values": ["ALL_OP"]},
+                {"name": "skyflow.options.unique", "values": ["true"]},
+                {"name": "skyflow.options.display_name", "values": [primary_key.lower()]}
             ],
             "index": 0
         }
@@ -473,10 +327,8 @@ def SKYFLOW_CREATE_VAULT(auth_token, vault_name, table_name, primary_key, pii_fi
             }
             field_blocks.append(field_block)
         else:
-            # Handle fields without specific configurations (optional)
-            # You can skip them or apply a default configuration
             print(f"No specific configuration found for field '{field}'. Skipping.")
-            pass  # Or apply a default configuration if desired
+            pass  # Skip fields without specific configurations
     
     # Build the body for the API request
     body = {
@@ -492,32 +344,17 @@ def SKYFLOW_CREATE_VAULT(auth_token, vault_name, table_name, primary_key, pii_fi
                 }
             ],
             "tags": [
-                {
-                    "name": "skyflow.options.experimental",
-                    "values": ["true"]
-                },
-                {
-                    "name": "skyflow.options.vault_main_object",
-                    "values": ["Quickstart"]
-                },
-                {
-                    "name": "skyflow.options.query_interface",
-                    "values": ["REST", "SQL"]
-                },
-                {
-                    "name": "skyflow.options.env_name",
-                    "values": ["ALL_ENV"]
-                },
-                {
-                    "name": "skyflow.options.display_name",
-                    "values": ["Quickstart"]
-                }
+                {"name": "skyflow.options.experimental", "values": ["true"]},
+                {"name": "skyflow.options.vault_main_object", "values": ["Quickstart"]},
+                {"name": "skyflow.options.query_interface", "values": ["REST", "SQL"]},
+                {"name": "skyflow.options.env_name", "values": ["ALL_ENV"]},
+                {"name": "skyflow.options.display_name", "values": ["Quickstart"]}
             ]
         },
-        "workspaceID": GET_WORKSPACE_ID(auth_token),
+        "workspaceID": "<TODO: WORKSPACE_ID>",
         "owners": [
             {
-                "ID": GET_USER_ID_BY_EMAIL(auth_token, vault_owner_email),
+                "ID": GET_USER_ID_BY_EMAIL(snowflake_session, auth_token, req_session, vault_owner_email),
                 "type": "USER"
             },
             {
@@ -530,27 +367,30 @@ def SKYFLOW_CREATE_VAULT(auth_token, vault_name, table_name, primary_key, pii_fi
     url = "https://manage.skyflowapis.com/v1/vaults"
     headers = {
         "Authorization": "Bearer " + auth_token,
-        "X-SKYFLOW-ACCOUNT-ID": GET_ACCOUNT_ID()
+        "X-SKYFLOW-ACCOUNT-ID": "<TODO: ACCOUNT_ID>"
     }
     
-    response = session.post(url, json=body, headers=headers)
-    
-    # Check for errors in the response
-    if response.status_code != 200:
-        raise Exception(f"Failed to create vault: {response.text}")
+    try:
+        response = req_session.post(url, json=body, headers=headers)
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to create vault: {e}")
+        raise Exception(f"Failed to create vault: {e}")
     
     vault_response = json.loads(response.text)
     
     return vault_response["ID"]
 
 def SKYFLOW_TOKENIZE_TABLE(snowflake_session, vault_name, table_name, primary_key, pii_fields_delimited, vault_owner_email):
-    from requests import Session
-    from snowflake.snowpark.window import Window
-    from snowflake.snowpark.functions import row_number, col
-    import time
+    import re
 
-    auth_token = GENERATE_AUTH_TOKEN()
+    # Initialize a separate requests session
+    req_session = requests.Session()
     
+    # Generate or retrieve the cached credentials
+    auth_token = GENERATE_AUTH_TOKEN(snowflake_session, req_session)
+
+    # Vault ID can either be passed directly or needs to be fetched by name
     if re.match(r"^[a-z0-9]{32}$", vault_name):
         vault_id = vault_name
     else:
@@ -573,10 +413,8 @@ def SKYFLOW_TOKENIZE_TABLE(snowflake_session, vault_name, table_name, primary_ke
 
     # Calculate total records and batches
     total_records = df.count()
-    log_message(snowflake_session, f"Total records counted: {total_records}")
     batch_size = 25
     total_batches = (total_records + batch_size - 1) // batch_size
-    log_message(snowflake_session, f"Total number of batches: {total_batches}")
 
     # Initialize a list to store mappings
     mapping_data = []
@@ -593,32 +431,36 @@ def SKYFLOW_TOKENIZE_TABLE(snowflake_session, vault_name, table_name, primary_ke
             batch_records = batch_df.collect()
 
             if not batch_records:
-                log_message(snowflake_session, f"Batch {batch_num} is empty. Skipping.")
                 continue
 
-        records = []
+            records = []
             for row in batch_records:
-            record = {
-                    "fields": {column.lower(): row[column.upper()] for column in pii_columns}
+                record = {
+                        "fields": {column.lower(): row[column.upper()] for column in pii_columns}
+                }
+                records.append(record)
+            
+            body = {
+                "records": records,
+                "tokenization": True
             }
-            records.append(record)
-        
-        body = {
-            "records": records,
-            "tokenization": True
-        }
 
-            # Use a session for the API call
-            session = Session()
-            url = f"https://ebfc9bee4242.vault.skyflowapis.com/v1/vaults/{vault_id}/{table_name.lower()}"
-        headers = {
-            "Authorization": "Bearer " + auth_token
-        }
-        
-        response = session.post(url, json=body, headers=headers)
-        response_as_json = response.json()
-        
-        if "records" in response_as_json:
+                # Make the API call
+                skyflow_url = f"https://ebfc9bee4242.vault.skyflowapis.com/v1/vaults/{vault_id}/{table_name.lower()}"
+                headers = {"Authorization": "Bearer " + auth_token}
+            
+                try:
+                    response = req_session.post(skyflow_url, json=body, headers=headers)
+                    response.raise_for_status()
+                    response_as_json = response.json()
+                except requests.exceptions.RequestException as e:
+                    logger.error(f"Tokenization request failed: {e}")
+                    raise Exception(f"Tokenization request failed: {e}")
+                except json.JSONDecodeError as e:
+                    logger.error(f"JSON decoding failed: {e}, Response Text: {response.text}")
+                    raise Exception(f"JSON decoding failed: {e}")
+            
+            if "records" in response_as_json:
                 batch_mapping_data = []
                 for original_record, tokenized_record in zip(records, response_as_json["records"]):
                     primary_key_value = original_record["fields"][primary_key_lower]
@@ -627,13 +469,11 @@ def SKYFLOW_TOKENIZE_TABLE(snowflake_session, vault_name, table_name, primary_ke
                     
                 # Append to the mapping_data list
                 mapping_data.extend(batch_mapping_data)
-                log_message(snowflake_session, f"Batch {batch_num} processed successfully.")
-        else:
+            else:
                 error_msg = f"Key 'records' not found in the response for batch {batch_num}. Response: {response_as_json}"
-                log_message(snowflake_session, error_msg)
                 raise Exception(error_msg)
         except Exception as e:
-            log_message(snowflake_session, f"Exception in batch {batch_num}: {e}")
+            logger.error(f"Error processing batch {batch_num}: {e}")
             raise  # Re-raise the exception to halt execution
 
     if not mapping_data:
@@ -653,6 +493,7 @@ def SKYFLOW_TOKENIZE_TABLE(snowflake_session, vault_name, table_name, primary_ke
     select_clause = ", ".join(select_fields)
 
     # Perform the update using a JOIN
+    try:
     snowflake_session.sql(
         f'''
         UPDATE "{table_name}" AS t
@@ -665,45 +506,17 @@ def SKYFLOW_TOKENIZE_TABLE(snowflake_session, vault_name, table_name, primary_ke
         WHERE t."{primary_key_upper}" = m."{primary_key_upper}"
         '''
     ).collect()
+    except Exception as e:
+        logger.error(f"Failed to execute UPDATE statement: {e}")
+        raise Exception(f"Failed to execute UPDATE statement: {e}")
 
     # Drop the mapping table
+    try:
     snowflake_session.sql(f'DROP TABLE IF EXISTS "{mapping_table_name}"').collect()
-
-    # Retrieve the current warehouse from the session
-    warehouse_name = snowflake_session.sql("SELECT CURRENT_WAREHOUSE()").collect()[0][0]
-    
-    # Ensure that a warehouse is set
-    if not warehouse_name:
-        raise ValueError("No warehouse is currently set in the session. Please set a warehouse before running this code.")
-
-    # Create or replace the stream and task for continuous tokenization
-    # Create the stream
-    snowflake_session.sql(f'''
-        CREATE OR REPLACE STREAM SKYFLOW_PII_STREAM_{table_name}
-        ON TABLE {table_name}
-    ''').collect()
-    
-    # Create the task using the current warehouse
-    snowflake_session.sql(f'''
-        CREATE OR REPLACE TASK SKYFLOW_PII_STREAM_{table_name}_TASK
-        WAREHOUSE = '{warehouse_name}'
-        SCHEDULE = '1 MINUTE'
-        WHEN SYSTEM$STREAM_HAS_DATA('SKYFLOW_PII_STREAM_{table_name}')
-        AS CALL SKYFLOW_PROCESS_PII(
-            '{vault_id}',
-            '{table_name}',
-            '{primary_key}',
-            '{pii_fields_delimited}'
-        )
-    ''').collect()
-    
-    # Resume the task
-    snowflake_session.sql(f'''
-        ALTER TASK SKYFLOW_PII_STREAM_{table_name}_TASK RESUME
-    ''').collect()
+    except Exception as e:
+        logger.error(f"Failed to drop mapping table {mapping_table_name}: {e}")
 
     return f"Tokenization for table {table_name} completed successfully!"
-
 $$;
 
 
@@ -734,24 +547,14 @@ logger = logging.getLogger("python_logger")
 logger.setLevel(logging.INFO)
 logger.info("Logging from SKYFLOW_DETOKENIZE Python module.")
 
-# Global cache for storing the auth token and its expiry time
-AUTH_TOKEN_CACHE = {
-    'token': None,
-    'expiry': None
-}
-
 def GENERATE_AUTH_TOKEN():
-    # Check if a valid token is already in the cache
-    if AUTH_TOKEN_CACHE['token'] and AUTH_TOKEN_CACHE['expiry'] > time.time():
-        return AUTH_TOKEN_CACHE['token']
-    
-    # Existing code to generate a new token
+    # Generate a new token
     credentials = json.loads(_snowflake.get_generic_secret_string('cred'), strict=False)
     claims = {
        "iss": credentials["clientID"],
        "key": credentials["keyID"], 
        "aud": credentials["tokenURI"], 
-       "exp": int(time.time()) + (3600), # JWT expires in Now + 60 minutes
+       "exp": int(time.time()) + (3600),  # JWT expires in Now + 60 minutes
        "sub": credentials["clientID"], 
     }
     signedJWT = jwt.encode(claims, credentials["privateKey"], algorithm='RS256')
@@ -761,49 +564,16 @@ def GENERATE_AUTH_TOKEN():
     }
     tokenURI = credentials["tokenURI"]
     
-    # Use the persistent session to send the request
+    # Use the session to send the request
     r = session.post(tokenURI, json=body)
     auth = json.loads(r.text)
     
-    # Store the new token and its expiry time in the cache
-    AUTH_TOKEN_CACHE['token'] = auth["accessToken"]
-    AUTH_TOKEN_CACHE['expiry'] = time.time() + (3600) # Assuming the token expires in 1 hour
-    
     return auth["accessToken"]
-
-def GET_ACCOUNT_ID():
-    return "<TODO: ACCOUNT_ID>"
-
-    
-def GET_WORKSPACE_ID(auth_token):
-    url = f"https://manage.skyflowapis.com/v1/workspaces"
-    headers = {
-        "Authorization": "Bearer " + auth_token,
-        "X-SKYFLOW-ACCOUNT-ID": GET_ACCOUNT_ID()
-    }
-
-    response = session.get(url, headers=headers)
-    workspace_response = json.loads(response.text)
-    
-    return workspace_response["workspaces"][0]["ID"]  
-    
-def GET_VAULT_ID_BY_NAME(auth_token, vault_name):
-    workspace_id = GET_WORKSPACE_ID(auth_token)
-    url = f"https://manage.skyflowapis.com/v1/vaults?filterOps.name={vault_name}&workspaceID={workspace_id}"
-    headers = {
-        "Authorization": "Bearer " + auth_token,
-        "X-SKYFLOW-ACCOUNT-ID": GET_ACCOUNT_ID()
-    }
-
-    response = session.get(url, headers=headers)
-    vault_response = json.loads(response.text)
-    
-    return vault_response["vaults"][0]["ID"]   
 
 @vectorized(input=pandas.DataFrame, max_batch_size=25)
 def SKYFLOW_DETOKENIZE(token_df):
     auth_token = GENERATE_AUTH_TOKEN()
-    vault_id = GET_VAULT_ID_BY_NAME(auth_token, 'SkyflowVault')
+    vault_id = "<TODO: VAULT_ID>"
 
     # Convert the DataFrame Series into the token format needed for the detokenize call.
     token_values = token_df[0].apply(lambda x: {'token': x, 'redaction': 'PLAIN_TEXT'}).tolist()
@@ -814,7 +584,7 @@ def SKYFLOW_DETOKENIZE(token_df):
     url = f"https://ebfc9bee4242.vault.skyflowapis.com/v1/vaults/{vault_id}/detokenize"
     headers = { 'Authorization': 'Bearer ' + auth_token }
 
-    # Use the persistent session to send the request
+    # Use the session to send the request
     response = session.post(url, json=body, headers=headers)
     
     # Check if the request was successful
@@ -836,6 +606,8 @@ def SKYFLOW_DETOKENIZE(token_df):
 
 $$;
 
+
+-- Step 7: Create a function to detokenize data for use in snowflake queries
 CREATE OR REPLACE FUNCTION SKYFLOW_DETOKENIZE(token VARCHAR, redaction_level STRING)
 RETURNS STRING
 LANGUAGE PYTHON
@@ -847,39 +619,28 @@ SECRETS = ('cred' = SKYFLOW_VAULT_SECRET)
 AS
 $$
 import pandas
-import _snowflake
 import simplejson as json
 import jwt
 import requests 
 import time
-from _snowflake import vectorized
 import logging
+import _snowflake  # Import the _snowflake module
+from _snowflake import vectorized
 
-# Initialize a session object at the global scope
-session = requests.Session()
+# Initialize a requests session object at the global scope
+http_session = requests.Session()
 
 logger = logging.getLogger("python_logger")
 logger.setLevel(logging.INFO)
 logger.info("Logging from SKYFLOW_DETOKENIZE Python module.")
 
-# Global cache for storing the auth token and its expiry time
-AUTH_TOKEN_CACHE = {
-    'token': None,
-    'expiry': None
-}
-
 def GENERATE_AUTH_TOKEN():
-    # Check if a valid token is already in the cache
-    if AUTH_TOKEN_CACHE['token'] and AUTH_TOKEN_CACHE['expiry'] > time.time():
-        return AUTH_TOKEN_CACHE['token']
-    
-    # Existing code to generate a new token
     credentials = json.loads(_snowflake.get_generic_secret_string('cred'), strict=False)
     claims = {
        "iss": credentials["clientID"],
        "key": credentials["keyID"], 
        "aud": credentials["tokenURI"], 
-       "exp": int(time.time()) + (3600), # JWT expires in Now + 60 minutes
+        "exp": int(time.time()) + 3600,
        "sub": credentials["clientID"], 
     }
     signedJWT = jwt.encode(claims, credentials["privateKey"], algorithm='RS256')
@@ -889,80 +650,99 @@ def GENERATE_AUTH_TOKEN():
     }
     tokenURI = credentials["tokenURI"]
     
-    # Use the persistent session to send the request
-    r = session.post(tokenURI, json=body)
-    auth = json.loads(r.text)
-    
-    # Store the new token and its expiry time in the cache
-    AUTH_TOKEN_CACHE['token'] = auth["accessToken"]
-    AUTH_TOKEN_CACHE['expiry'] = time.time() + (3600) # Assuming the token expires in 1 hour
-    
+    try:
+        response = http_session.post(tokenURI, json=body)
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to generate auth token: {e}")
+        raise Exception(f"Failed to generate auth token: {e}")
+
+    auth = json.loads(response.text)
     return auth["accessToken"]
 
-def GET_ACCOUNT_ID():
-    return "hd873b584c194159a38f1fb0ed18bbee"
-
-def GET_WORKSPACE_ID(auth_token):
-    url = f"https://manage.skyflowapis.com/v1/workspaces"
-    headers = {
-        "Authorization": "Bearer " + auth_token,
-        "X-SKYFLOW-ACCOUNT-ID": GET_ACCOUNT_ID()
-    }
-
-    response = session.get(url, headers=headers)
-    workspace_response = json.loads(response.text)
-    
-    return workspace_response["workspaces"][0]["ID"]
-
 def GET_VAULT_ID_BY_NAME(auth_token, vault_name):
-    workspace_id = GET_WORKSPACE_ID(auth_token)
+    workspace_id = "<TODO: WORKSPACE_ID>"
     url = f"https://manage.skyflowapis.com/v1/vaults?filterOps.name={vault_name}&workspaceID={workspace_id}"
     headers = {
-        "Authorization": "Bearer " + auth_token,
-        "X-SKYFLOW-ACCOUNT-ID": GET_ACCOUNT_ID()
+        "Authorization": f"Bearer {auth_token}",
+        "X-SKYFLOW-ACCOUNT-ID": "<TODO: ACCOUNT_ID>"
     }
 
-    response = session.get(url, headers=headers)
-    vault_response = json.loads(response.text)
-    
-    return vault_response["vaults"][0]["ID"]
+    try:
+        response = http_session.get(url, headers=headers)
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to get vault ID: {e}")
+        raise Exception(f"Failed to get vault ID: {e}")
 
-@vectorized(input=pandas.DataFrame, max_batch_size=25)
+    try:
+        vault_response = json.loads(response.text)
+        vault_id = vault_response["vaults"][0]["ID"]
+        logger.info(f"Retrieved vault_id: {vault_id}")
+        return vault_id
+    except (KeyError, IndexError, json.JSONDecodeError) as e:
+        logger.error(f"Error parsing vault response: {e}, Response Text: {response.text}")
+        raise Exception(f"Error parsing vault response: {e}")
+
+@vectorized(input=pandas.DataFrame, max_batch_size=10000)
 def SKYFLOW_DETOKENIZE(token_df):
     auth_token = GENERATE_AUTH_TOKEN()
     vault_id = GET_VAULT_ID_BY_NAME(auth_token, 'SkyflowVault')
 
-    # token_df has two columns: [token, redaction_level]
-    token_values = token_df.apply(lambda row: {'token': row[0], 'redaction': row[1]}, axis=1).tolist()
+    tokens_list = token_df.iloc[:, 0].tolist()
+    redaction_levels = token_df.iloc[:, 1].tolist()
+
+    unique_tokens = {}
+    for idx, (token, redaction) in enumerate(zip(tokens_list, redaction_levels)):
+        if token not in unique_tokens:
+            unique_tokens[token] = {'indices': [idx], 'redaction': redaction}
+        else:
+            unique_tokens[token]['indices'].append(idx)
+
+    detokenized_results = {}
+    batch_size = 25
+    tokens_items = list(unique_tokens.items())
+    for i in range(0, len(tokens_items), batch_size):
+        batch = tokens_items[i:i+batch_size]
+        detokenization_parameters = [{'token': token, 'redaction': info['redaction']} for token, info in batch]
     
-    body = {
-        'detokenizationParameters': token_values
-    }
+        body = {
+            'detokenizationParameters': detokenization_parameters
+        }
 
-    url = f"https://ebfc9bee4242.vault.skyflowapis.com/v1/vaults/{vault_id}/detokenize"
-    headers = { 'Authorization': 'Bearer ' + auth_token }
+        url = f"https://ebfc9bee4242.vault.skyflowapis.com/v1/vaults/{vault_id}/detokenize"
+        headers = {'Authorization': f'Bearer {auth_token}'}
 
-    # Use the persistent session to send the request
-    response = session.post(url, json=body, headers=headers)
-    
-    # Check if the request was successful
-    if response.status_code != 200:
-        logger.error(f"Detokenization request failed with status code {response.status_code}")
-        return pandas.Series([None] * len(token_df))  # Return a series of None values
+        try:
+            response = http_session.post(url, json=body, headers=headers)
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Detokenization request failed: {e}")
+            continue
 
-    response_as_json = response.json()
+        try:
+            response_as_json = response.json()
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON decoding failed: {e}, Response Text: {response.text}")
+            continue
 
-    # Check if 'records' key exists in the response
-    if 'records' not in response_as_json:
-        logger.error("'records' key not found in the response.")
-        return pandas.Series([None] * len(token_df))  # Return a series of None values
+        if 'records' not in response_as_json:
+            logger.error("'records' key not found in the response.")
+            continue
 
-    # Convert the JSON response into a DataFrame Series.
-    data = [record['value'] for record in response_as_json['records']]
+        for record in response_as_json['records']:
+            detokenized_results[record['token']] = record['value']
 
-    return pandas.Series(data)
+    result_series = [None] * len(tokens_list)
+    for token, info in unique_tokens.items():
+        detokenized_value = detokenized_results.get(token, None)
+        for idx in info['indices']:
+            result_series[idx] = detokenized_value
+
+    return pandas.Series(result_series)
 
 $$;
+
 
 -- Step 8: Create a function for processing PII updates from a snowflake stream
 CREATE OR REPLACE PROCEDURE SKYFLOW_PROCESS_PII(vault_id VARCHAR, table_name VARCHAR, primary_key VARCHAR, pii_fields STRING)
@@ -989,24 +769,44 @@ logger = logging.getLogger("python_logger")
 logger.setLevel(logging.INFO)
 logger.info("Logging from SKYFLOW_PROCESS_PII Python module.")
 
-# Global cache for storing the auth token and its expiry time
-AUTH_TOKEN_CACHE = {
-    'token': None,
-    'expiry': None
-}
+def GET_CACHED_AUTH_TOKEN(snowflake_session):
+    # Query the SKYFLOW_CACHE table for an existing token
+    result = snowflake_session.sql("SELECT token, expiry FROM SKYFLOW_CACHE WHERE token_type = 'AUTH'").collect()
 
-def GENERATE_AUTH_TOKEN():
-    # Check if a valid token is already in the cache
-    if AUTH_TOKEN_CACHE['token'] and AUTH_TOKEN_CACHE['expiry'] > time.time():
-        return AUTH_TOKEN_CACHE['token']
-    
-    # Existing code to generate a new token
+    if result and len(result) > 0:
+        token = result[0]['TOKEN']
+        expiry = result[0]['EXPIRY']
+        
+        # Check if the token is still valid (expiry > current time)
+        if expiry > time.time():
+            return token
+    return None
+
+def STORE_AUTH_TOKEN(snowflake_session, token, expiry):
+    # Insert or update the token in the SKYFLOW_CACHE table
+    snowflake_session.sql(f"""
+        MERGE INTO SKYFLOW_CACHE AS target
+        USING (SELECT 'AUTH' AS token_type, '{token}' AS token, {expiry} AS expiry) AS source
+        ON target.token_type = source.token_type
+        WHEN MATCHED THEN
+            UPDATE SET target.token = source.token, target.expiry = source.expiry
+        WHEN NOT MATCHED THEN
+            INSERT (token_type, token, expiry) VALUES (source.token_type, source.token, source.expiry)
+    """).collect()
+
+def GENERATE_AUTH_TOKEN(snowflake_session):
+    # Try to get a cached token
+    cached_token = GET_CACHED_AUTH_TOKEN(snowflake_session)
+    if cached_token:
+        return cached_token
+
+    # Generate a new token if no valid cached token was found
     credentials = json.loads(_snowflake.get_generic_secret_string('cred'), strict=False)
     claims = {
        "iss": credentials["clientID"],
        "key": credentials["keyID"], 
        "aud": credentials["tokenURI"], 
-       "exp": int(time.time()) + (3600), # JWT expires in Now + 60 minutes
+       "exp": int(time.time()) + (3600),  # JWT expires in Now + 60 minutes
        "sub": credentials["clientID"], 
     }
     signedJWT = jwt.encode(claims, credentials["privateKey"], algorithm='RS256')
@@ -1016,23 +816,20 @@ def GENERATE_AUTH_TOKEN():
     }
     tokenURI = credentials["tokenURI"]
 
-    # Use the persistent session to send the request
+    # Use the session to send the request
     r = session.post(tokenURI, json=body)
     auth = json.loads(r.text)
-    
-    # Store the new token and its expiry time in the cache
-    AUTH_TOKEN_CACHE['token'] = auth["accessToken"]
-    AUTH_TOKEN_CACHE['expiry'] = time.time() + (3600) # Assuming the token expires in 1 hour
-    
-    return auth["accessToken"]
 
-def GET_ACCOUNT_ID():
-    return "hd873b584c194159a38f1fb0ed18bbee"
+    # Store the new token and its expiry time in the cache table
+    auth_token = auth["accessToken"]
+    expiry_time = time.time() + 3600  # 1 hour from now
+    STORE_AUTH_TOKEN(snowflake_session, auth_token, expiry_time)
+    
+    return auth_token
 
 def SKYFLOW_PROCESS_PII(snowflake_session, vault_id, table_name, primary_key, pii_fields):
-    # Load credentials and generate auth token
-    credentials = json.loads(_snowflake.get_generic_secret_string('cred'), strict=False)
-    auth_token = GENERATE_AUTH_TOKEN()
+    # Load credentials and generate (or retrieve) auth token
+    auth_token = GENERATE_AUTH_TOKEN(snowflake_session)
 
     # Convert primary_key and pii_fields to uppercase
     primary_key = primary_key.upper()
@@ -1041,7 +838,7 @@ def SKYFLOW_PROCESS_PII(snowflake_session, vault_id, table_name, primary_key, pi
 
     # Skyflow static variables
     table_name_skyflow = table_name.lower()
-    skyflow_account_id = GET_ACCOUNT_ID()
+    skyflow_account_id = "<TODO: ACCOUNT_ID>"
     skyflow_url_vault = f"https://ebfc9bee4242.vault.skyflowapis.com/v1/vaults/{vault_id}/"
 
     # Retrieve all stream records
@@ -1167,6 +964,7 @@ def SKYFLOW_PROCESS_PII(snowflake_session, vault_id, table_name, primary_key, pi
                 sql_command = f"UPDATE {table_name} SET {field} = CASE {primary_key} {' '.join(case_expressions[field])} END"
                 execute_update(sql_command, update_ids)
 
+    # Refresh the stream for future processing
     snowflake_session.sql(f'CREATE OR REPLACE STREAM SKYFLOW_PII_STREAM_{table_name} ON TABLE SKYFLOW_DEMO.PUBLIC.{table_name}').collect()
     return "Changes processed"
 
@@ -1174,30 +972,30 @@ $$;
 
 
 -- Create roles
-CREATE ROLE AUDITOR;
-CREATE ROLE BUSINESS_ANALYST;
-CREATE ROLE DATA_ENGINEER;
+CREATE ROLE ROLE_FULL_PII;
+CREATE ROLE ROLE_NO_PII;
+CREATE ROLE ROLE_PARTIAL_PII;
 
 -- Grant usage on database SKYFLOW_DEMO to roles
-GRANT USAGE ON DATABASE SKYFLOW_DEMO TO ROLE AUDITOR;
-GRANT USAGE ON DATABASE SKYFLOW_DEMO TO ROLE BUSINESS_ANALYST;
-GRANT USAGE ON DATABASE SKYFLOW_DEMO TO ROLE DATA_ENGINEER;
+GRANT USAGE ON DATABASE SKYFLOW_DEMO TO ROLE ROLE_FULL_PII;
+GRANT USAGE ON DATABASE SKYFLOW_DEMO TO ROLE ROLE_NO_PII;
+GRANT USAGE ON DATABASE SKYFLOW_DEMO TO ROLE ROLE_PARTIAL_PII;
 
 -- Grant usage on schema SKYFLOW_DEMO.PUBLIC to roles
-GRANT USAGE ON SCHEMA SKYFLOW_DEMO.PUBLIC TO ROLE AUDITOR;
-GRANT USAGE ON SCHEMA SKYFLOW_DEMO.PUBLIC TO ROLE BUSINESS_ANALYST;
-GRANT USAGE ON SCHEMA SKYFLOW_DEMO.PUBLIC TO ROLE DATA_ENGINEER;
+GRANT USAGE ON SCHEMA SKYFLOW_DEMO.PUBLIC TO ROLE ROLE_FULL_PII;
+GRANT USAGE ON SCHEMA SKYFLOW_DEMO.PUBLIC TO ROLE ROLE_NO_PII;
+GRANT USAGE ON SCHEMA SKYFLOW_DEMO.PUBLIC TO ROLE ROLE_PARTIAL_PII;
 
 -- Grant access to table SKYFLOW_DEMO.PUBLIC.CUSTOMERS to roles
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE SKYFLOW_DEMO.PUBLIC.CUSTOMERS TO ROLE AUDITOR;
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE SKYFLOW_DEMO.PUBLIC.CUSTOMERS TO ROLE BUSINESS_ANALYST;
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE SKYFLOW_DEMO.PUBLIC.CUSTOMERS TO ROLE DATA_ENGINEER;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE SKYFLOW_DEMO.PUBLIC.CUSTOMERS TO ROLE ROLE_FULL_PII;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE SKYFLOW_DEMO.PUBLIC.CUSTOMERS TO ROLE ROLE_NO_PII;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE SKYFLOW_DEMO.PUBLIC.CUSTOMERS TO ROLE ROLE_PARTIAL_PII;
 
 CREATE OR REPLACE MASKING POLICY DETOKENIZE_COLUMN AS (VAL STRING) RETURNS STRING ->
   CASE
-    WHEN CURRENT_ROLE() IN ('AUDITOR') THEN SKYFLOW_DETOKENIZE(VAL, 'PLAIN_TEXT')
-    WHEN CURRENT_ROLE() IN ('DATA_ENGINEER') THEN SKYFLOW_DETOKENIZE(VAL, 'MASKED')
-    WHEN CURRENT_ROLE() IN ('BUSINESS_ANALYST') THEN SKYFLOW_DETOKENIZE(VAL, 'REDACTED')
+    WHEN CURRENT_ROLE() IN ('ROLE_FULL_PII') THEN SKYFLOW_DETOKENIZE(VAL, 'PLAIN_TEXT')
+    WHEN CURRENT_ROLE() IN ('ROLE_PARTIAL_PII') THEN SKYFLOW_DETOKENIZE(VAL, 'MASKED')
+    WHEN CURRENT_ROLE() IN ('ROLE_NO_PII') THEN SKYFLOW_DETOKENIZE(VAL, 'REDACTED')
     ELSE VAL
   END;
 
@@ -1236,9 +1034,9 @@ def GRANT_WAREHOUSE_ACCESS(session, role_name):
 $$;
 
 
-CALL GRANT_WAREHOUSE_ACCESS('AUDITOR');
-CALL GRANT_WAREHOUSE_ACCESS('BUSINESS_ANALYST');
-CALL GRANT_WAREHOUSE_ACCESS('DATA_ENGINEER');
+CALL GRANT_WAREHOUSE_ACCESS('ROLE_FULL_PII');
+CALL GRANT_WAREHOUSE_ACCESS('ROLE_NO_PII');
+CALL GRANT_WAREHOUSE_ACCESS('ROLE_PARTIAL_PII');
 
 CREATE OR REPLACE PROCEDURE GRANT_ROLE_TO_CURRENT_USER(role_name STRING)
 RETURNS STRING
@@ -1265,6 +1063,6 @@ def GRANT_ROLE_TO_CURRENT_USER(session, role_name):
     return f"Granted role {role_name} to user {current_user}."
 $$;
 
-CALL GRANT_ROLE_TO_CURRENT_USER('AUDITOR');
-CALL GRANT_ROLE_TO_CURRENT_USER('BUSINESS_ANALYST');
-CALL GRANT_ROLE_TO_CURRENT_USER('DATA_ENGINEER');
+CALL GRANT_ROLE_TO_CURRENT_USER('ROLE_FULL_PII');
+CALL GRANT_ROLE_TO_CURRENT_USER('ROLE_NO_PII');
+CALL GRANT_ROLE_TO_CURRENT_USER('ROLE_PARTIAL_PII');
