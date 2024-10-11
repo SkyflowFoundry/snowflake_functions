@@ -160,13 +160,25 @@ def get_bearer_token(credentials_hashable):
 
         token_uri = credentials["tokenURI"]
         
-        response = requests.post(url=token_uri, json=body)
+        response = http_session.post(url=token_uri, json=body)
         response.raise_for_status()
         auth = sjson.loads(response.text)
         return auth["accessToken"]
 
     except Exception:
         return None
+
+@cached(cache)
+def GET_WORKSPACE_ID(auth_token):
+    url = f"https://manage.skyflowapis.com/v1/workspaces"
+    headers = {
+        "Authorization": "Bearer " + auth_token,
+        "X-SKYFLOW-ACCOUNT-ID": GET_ACCOUNT_ID()
+    }
+    response = session.get(url, headers=headers)
+    workspace_response = json.loads(response.text)
+    
+    return workspace_response["workspaces"][0]["ID"]
 
 def create_detokenize_udf(session, vault_id):
     # Define the SQL to create the UDF with Python as the handler
@@ -251,7 +263,7 @@ def get_bearer_token(credentials_hashable):
 
         token_uri = credentials["tokenURI"]
 
-        response = requests.post(url=token_uri, json=body)
+        response = http_session.post(url=token_uri, json=body)
         response.raise_for_status()
         auth = sjson.loads(response.text)
         return auth["accessToken"]
@@ -585,7 +597,7 @@ def SKYFLOW_CREATE_VAULT(auth_token, vault_name, table_name, primary_key, pii_fi
                 {"name": "skyflow.options.display_name", "values": ["Quickstart"]}
             ]
         },
-        "workspaceID": "<TODO: WORKSPACE_ID>",
+        "workspaceID": GET_WORKSPACE_ID(auth_token),
         "owners": [
             {
                 "ID": GET_USER_ID_BY_EMAIL(auth_token, vault_owner_email),
@@ -741,7 +753,7 @@ def get_bearer_token(credentials_hashable):
 
         token_uri = credentials["tokenURI"]
 
-        response = requests.post(url=token_uri, json=body)
+        response = http_session.post(url=token_uri, json=body)
             response.raise_for_status()
         auth = sjson.loads(response.text)
         return auth["accessToken"]
@@ -787,7 +799,7 @@ def SKYFLOW_PROCESS_PII(session, vault_id, table_name, primary_key, pii_fields):
     # Process DELETE actions
     if primary_keys_to_delete:
         # Make a single GET request to obtain all skyflow_ids
-        response = requests.get(
+        response = http_session.get(
             skyflow_url_vault + table_name_skyflow,
             headers={
                 'Accept': 'application/json',
@@ -859,7 +871,7 @@ def SKYFLOW_PROCESS_PII(session, vault_id, table_name, primary_key, pii_fields):
                 "Authorization": "Bearer " + auth_token
             }
             
-            response = requests.post(url, json=body, headers=headers)
+            response = http_session.post(url, json=body, headers=headers)
             response_as_json = response.json()
             
             # Check if 'records' key exists in the response
