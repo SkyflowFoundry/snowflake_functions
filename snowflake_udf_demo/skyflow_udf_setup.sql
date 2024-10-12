@@ -245,21 +245,21 @@ def get_bearer_token(credentials_hashable):
     try:
         credentials = dict(credentials_hashable)
 
-    claims = {
-        "iss": credentials["clientID"],
-        "key": credentials["keyID"], 
-        "aud": credentials["tokenURI"], 
-        "exp": int(time.time()) + 3600,  # JWT expires in Now + 60 minutes
-        "sub": credentials["clientID"], 
-    }
+        claims = {
+            "iss": credentials["clientID"],
+            "key": credentials["keyID"], 
+            "aud": credentials["tokenURI"], 
+            "exp": int(time.time()) + 3600,  # JWT expires in Now + 60 minutes
+            "sub": credentials["clientID"], 
+        }
         
         signed_jwt = jwt.encode(claims, credentials["privateKey"], algorithm='RS256')
         
         # Request body parameters
-    body = {
-       'grant_type': 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        body = {
+            'grant_type': 'urn:ietf:params:oauth:grant-type:jwt-bearer',
             'assertion': signed_jwt,
-    }
+        }
 
         token_uri = credentials["tokenURI"]
 
@@ -311,17 +311,17 @@ def SKYFLOW_DETOKENIZE(token_df):
         try:
             # Make the detokenization API request
             response = http_session.post(url, json=body, headers=headers)
-        response.raise_for_status()
+            response.raise_for_status()
 
         except requests.exceptions.ConnectionError as e:
             error_msg = f"ConnectionError: {e}. The remote end closed the connection."
             return pandas.Series([f"Error: {error_msg}" for _ in range(len(token_df))])
 
-    except requests.exceptions.RequestException as e:
-            error_msg = f"Detokenization request failed: {e}."
-            response_text = response.text if 'response' in locals() else 'No response'
-            error_msg += f" Response content: {response_text}"
-            return pandas.Series([f"Error: {error_msg}" for _ in range(len(token_df))])
+        except requests.exceptions.RequestException as e:
+                error_msg = f"Detokenization request failed: {e}."
+                response_text = response.text if 'response' in locals() else 'No response'
+                error_msg += f" Response content: {response_text}"
+                return pandas.Series([f"Error: {error_msg}" for _ in range(len(token_df))])
 
         try:
             response_as_json = response.json()
@@ -710,14 +710,14 @@ def retry(attempts, delay, multiplier, callback):
 def get_signed_jwt(credentials):
     try:
         # Create the claims object with the data in the creds object
-    claims = {
-       "iss": credentials["clientID"],
-       "key": credentials["keyID"], 
-       "aud": credentials["tokenURI"], 
+        claims = {
+            "iss": credentials["clientID"],
+            "key": credentials["keyID"], 
+            "aud": credentials["tokenURI"], 
             # JWT expires in Now + 60 minutes
             "exp": int(time.time()) + (3600),
-       "sub": credentials["clientID"], 
-    }
+            "sub": credentials["clientID"], 
+        }
         # Sign the claims object with the private key contained in the creds
         # object
         signedJWT = jwt.encode(
@@ -735,13 +735,13 @@ def get_bearer_token(credentials_hashable):
     try:
         credentials = dict(credentials_hashable)
 
-    claims = {
-       "iss": credentials["clientID"],
-       "key": credentials["keyID"], 
-       "aud": credentials["tokenURI"], 
+        claims = {
+            "iss": credentials["clientID"],
+            "key": credentials["keyID"], 
+            "aud": credentials["tokenURI"], 
             "exp": int(time.time()) + 3600,  # JWT expires in Now + 60 minutes
-       "sub": credentials["clientID"], 
-    }
+            "sub": credentials["clientID"], 
+        }
         
         signed_jwt = jwt.encode(claims, credentials["privateKey"], algorithm='RS256')
         
@@ -754,12 +754,12 @@ def get_bearer_token(credentials_hashable):
         token_uri = credentials["tokenURI"]
 
         response = http_session.post(url=token_uri, json=body)
-            response.raise_for_status()
+        response.raise_for_status()
         auth = sjson.loads(response.text)
         return auth["accessToken"]
 
     except Exception:
-    return None
+        return None
 
 @cached(cache)
 def get_secret(secret_name):
