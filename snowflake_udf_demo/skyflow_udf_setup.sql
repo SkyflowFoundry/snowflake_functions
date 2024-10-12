@@ -173,10 +173,10 @@ def GET_WORKSPACE_ID(auth_token):
     url = f"https://manage.skyflowapis.com/v1/workspaces"
     headers = {
         "Authorization": "Bearer " + auth_token,
-        "X-SKYFLOW-ACCOUNT-ID": GET_ACCOUNT_ID()
+        "X-SKYFLOW-ACCOUNT-ID": "<TODO: ACCOUNT_ID>"
     }
-    response = session.get(url, headers=headers)
-    workspace_response = json.loads(response.text)
+    response = http_session.get(url, headers=headers)
+    workspace_response = sjson.loads(response.text)
     
     return workspace_response["workspaces"][0]["ID"]
 
@@ -909,8 +909,6 @@ def SKYFLOW_PROCESS_PII(session, vault_id, table_name, primary_key, pii_fields):
 
 $$;
 
-
-
 -- Create roles
 CREATE ROLE ROLE_FULL_PII;
 CREATE ROLE ROLE_MASKED_PII;
@@ -959,7 +957,6 @@ def GRANT_WAREHOUSE_ACCESS(session, role_name):
     # Return a success message
     return f"Granted usage on warehouse {current_warehouse} to the role {role_name}."
 $$;
-
 
 CALL GRANT_WAREHOUSE_ACCESS('ROLE_FULL_PII');
 CALL GRANT_WAREHOUSE_ACCESS('ROLE_MASKED_PII');
