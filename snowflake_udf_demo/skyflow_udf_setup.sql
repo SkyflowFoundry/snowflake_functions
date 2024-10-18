@@ -183,7 +183,11 @@ def GET_WORKSPACE_ID(auth_token):
 def create_detokenize_udf(session, vault_id):
     # Define the SQL to create the UDF with Python as the handler
     udf_sql = '''
-CREATE OR REPLACE FUNCTION SKYFLOW_DETOKENIZE(token VARCHAR, redaction_level STRING)
+CREATE OR REPLACE FUNCTION SKYFLOW_DETOKENIZE(
+    token VARCHAR,
+    redaction_level STRING,
+    username VARCHAR
+)
 RETURNS STRING
 LANGUAGE PYTHON
 RUNTIME_VERSION = 3.8
@@ -217,19 +221,19 @@ def retry(attempts, delay, multiplier, callback):
         "Max retries exceeded. Error occurred generating bearer token")
 
 @cached(cache)
-def get_signed_jwt(credentials):
+def get_signed_jwt(credentials_hashable, username):
     try:
+        credentials = dict(credentials_hashable)
         # Create the claims object with the data in the creds object
         claims = {
             "iss": credentials["clientID"],
             "key": credentials["keyID"],
             "aud": credentials["tokenURI"],
-            # JWT expires in Now + 60 minutes
-            "exp": int(time.time()) + (3600),
+            "exp": int(time.time()) + 3600,
             "sub": credentials["clientID"],
+            "ctx": username
         }
         # Sign the claims object with the private key contained in the creds
-        # object
         signedJWT = jwt.encode(
             claims,
             credentials["privateKey"],
@@ -237,55 +241,53 @@ def get_signed_jwt(credentials):
 
         return signedJWT
 
-    except Exception:
-        raise Exception("Unexpected error during JWT creation")
+    except Exception as e:
+        raise Exception(f"Unexpected error during JWT creation: {e}")
 
 @cached(cache)
-def get_bearer_token(credentials_hashable):
+def get_bearer_token(credentials_hashable, username):
     try:
-        credentials = dict(credentials_hashable)
+        # Retrieve the signed JWT
+        signed_jwt = get_signed_jwt(credentials_hashable, username)
 
-        claims = {
-            "iss": credentials["clientID"],
-            "key": credentials["keyID"], 
-            "aud": credentials["tokenURI"], 
-            "exp": int(time.time()) + 3600,  # JWT expires in Now + 60 minutes
-            "sub": credentials["clientID"], 
-        }
-        
-        signed_jwt = jwt.encode(claims, credentials["privateKey"], algorithm='RS256')
-        
         # Request body parameters
         body = {
             'grant_type': 'urn:ietf:params:oauth:grant-type:jwt-bearer',
             'assertion': signed_jwt,
         }
 
-        token_uri = credentials["tokenURI"]
+        token_uri = dict(credentials_hashable)["tokenURI"]
 
         response = http_session.post(url=token_uri, json=body)
         response.raise_for_status()
         auth = sjson.loads(response.text)
         return auth["accessToken"]
 
-    except Exception:
-        return None
+    except Exception as e:
+        raise Exception(f"Error generating bearer token: {e}")
+
 
 @cached(cache)
 def get_secret(secret_name):
     return sjson.loads(_snowflake.get_generic_secret_string(secret_name), strict=False)
-        
+
 @vectorized(input=pandas.DataFrame, max_batch_size=5000)
 def SKYFLOW_DETOKENIZE(token_df):
     vault_id = 'VAULT_ID_HERE'
     
-    credentials = get_secret('cred')
-    credentials_hashable = tuple(sorted(credentials.items()))
-    auth_token = get_bearer_token(credentials_hashable)
-    
+    # Extract token, redaction level, and username columns from the DataFrame
     tokens_list = token_df.iloc[:, 0].tolist()
     redaction_levels = token_df.iloc[:, 1].tolist()
-
+    usernames = token_df.iloc[:, 2].tolist()
+    
+    # Assuming all rows have the same username
+    username = usernames[0]  # Take the first username from the batch for the JWT
+    
+    # Retrieve credentials and generate a bearer token
+    credentials = get_secret('cred')
+    credentials_hashable = tuple(sorted(credentials.items()))  # Make credentials hashable
+    auth_token = get_bearer_token(credentials_hashable, username)
+    
     unique_tokens = {}
     for idx, (token, redaction) in enumerate(zip(tokens_list, redaction_levels)):
         if token not in unique_tokens:
@@ -313,25 +315,15 @@ def SKYFLOW_DETOKENIZE(token_df):
             response = http_session.post(url, json=body, headers=headers)
             response.raise_for_status()
 
-        except requests.exceptions.ConnectionError as e:
-            error_msg = f"ConnectionError: {e}. The remote end closed the connection."
-            return pandas.Series([f"Error: {error_msg}" for _ in range(len(token_df))])
-
         except requests.exceptions.RequestException as e:
-                error_msg = f"Detokenization request failed: {e}."
-                response_text = response.text if 'response' in locals() else 'No response'
-                error_msg += f" Response content: {response_text}"
-                return pandas.Series([f"Error: {error_msg}" for _ in range(len(token_df))])
+            error_msg = f"Detokenization request failed: {e}."
+            return pandas.Series([f"Error: {error_msg}" for _ in range(len(tokens_list))])
 
-        try:
-            response_as_json = response.json()
-        except sjson.JSONDecodeError as e:
-            error_msg = f"JSON decoding failed: {e}. Response Text: {response.text}"
-            return pandas.Series([f"Error: {error_msg}" for _ in range(len(token_df))])
+        response_as_json = response.json()
 
         if 'records' not in response_as_json:
             error_msg = "'records' key not found in the response."
-            return pandas.Series([f"Error: {error_msg}" for _ in range(len(token_df))])
+            return pandas.Series([f"Error: {error_msg}" for _ in range(len(tokens_list))])
 
         for record in response_as_json['records']:
             detokenized_results[record['token']] = record['value']
@@ -343,7 +335,6 @@ def SKYFLOW_DETOKENIZE(token_df):
         for idx in info['indices']:
             result_series[idx] = detokenized_value
 
-    # Return the result series with the same number of rows as the input
     return pandas.Series(result_series)
 $REPLACE_ME$;
 '''
@@ -356,9 +347,9 @@ def create_masking_policy(session, policy_name):
     masking_policy_sql = f"""
     CREATE OR REPLACE MASKING POLICY {policy_name} AS (VAL STRING) RETURNS STRING ->
       CASE
-        WHEN CURRENT_ROLE() IN ('ROLE_AUDIT_ADMIN') THEN SKYFLOW_DETOKENIZE(VAL, 'PLAIN_TEXT')
-        WHEN CURRENT_ROLE() IN ('ROLE_DATA_ENGINEER') THEN SKYFLOW_DETOKENIZE(VAL, 'MASKED')
-        WHEN CURRENT_ROLE() IN ('ROLE_MARKETING') THEN '**REDACTED**'
+        WHEN CURRENT_ROLE() IN ('ROLE_AUDIT_ADMIN') THEN SKYFLOW_DETOKENIZE(VAL, 'PLAIN_TEXT', CURRENT_USER())
+        WHEN CURRENT_ROLE() IN ('ROLE_DATA_ENGINEER') THEN SKYFLOW_DETOKENIZE(VAL, 'MASKED', CURRENT_USER())
+        WHEN CURRENT_ROLE() IN ('ROLE_MARKETING') THEN SKYFLOW_DETOKENIZE(VAL, 'REDACTED', CURRENT_USER())
         ELSE VAL
       END;
     """
