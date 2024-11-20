@@ -13,6 +13,16 @@ CREATE OR REPLACE TABLE SKYFLOW_DEMO.PUBLIC.CUSTOMERS (
     CUSTOMER_SINCE VARCHAR(16777216)
 );
 
+CREATE OR REPLACE TABLE SKYFLOW_DEMO.PUBLIC.SUPPLIERS (
+    SUPPLIER_ID NUMBER(38,0) IDENTITY(1,1),  -- Auto-incrementing column
+    SUPPLIER_NAME VARCHAR(16777216),
+    CONTACT_PERSON VARCHAR(16777216),
+    CONTACT_PHONE VARCHAR(16777216),
+    CONTACT_EMAIL VARCHAR(16777216),
+    CONTACT_ADDRESS VARCHAR(16777216),
+    TOTAL_ORDERS NUMBER(10, 0)
+);
+
 INSERT INTO SKYFLOW_DEMO.PUBLIC.CUSTOMERS (NAME, EMAIL, PHONE, ADDRESS, LIFETIME_PURCHASE_AMOUNT, CUSTOMER_SINCE)
 SELECT 
     CONCAT(
@@ -53,6 +63,51 @@ SELECT
     CONCAT(UNIFORM(2000, 2022, RANDOM()), '-', 
            LPAD(TO_VARCHAR(UNIFORM(1, 12, RANDOM())), 2, '0'), '-', 
            LPAD(TO_VARCHAR(UNIFORM(1, 28, RANDOM())), 2, '0')) AS CUSTOMER_SINCE
+FROM TABLE(GENERATOR(ROWCOUNT => 100));
+
+INSERT INTO SKYFLOW_DEMO.PUBLIC.SUPPLIERS (SUPPLIER_NAME, CONTACT_PERSON, CONTACT_PHONE, CONTACT_EMAIL, CONTACT_ADDRESS, TOTAL_ORDERS)
+SELECT 
+    CONCAT(
+        CASE WHEN RANDOM() < 0.25 THEN 'Global ' 
+             WHEN RANDOM() < 0.5 THEN 'Elite ' 
+             WHEN RANDOM() < 0.75 THEN 'Prime ' 
+             ELSE 'NextGen ' END, 
+        INITCAP(SUBSTR(MD5(RANDOM()), 1, 8)), ' Inc.'
+    ) AS NAME,
+    CONCAT(
+        CASE WHEN RANDOM() > 0.5 THEN 'Mr. ' ELSE 'Ms. ' END,
+        CASE WHEN RANDOM() < 0.25 THEN 'Chris ' 
+             WHEN RANDOM() < 0.5 THEN 'Pat ' 
+             WHEN RANDOM() < 0.75 THEN 'Taylor ' 
+             ELSE 'Jordan ' END, 
+        INITCAP(SUBSTR(MD5(RANDOM()), 1, 10))
+    ) AS CONTACT_PERSON,
+    CONCAT(
+        '+1 (', UNIFORM(200, 999, RANDOM()), ') 444-',  -- Random 3-digit area code and fixed 444 exchange
+        LPAD(TO_VARCHAR(UNIFORM(1000, 9999, RANDOM())), 4, '0')  -- Subscriber number
+    ) AS PHONE,
+    LOWER(CONCAT(
+        CASE WHEN RANDOM() < 0.25 THEN 'info@' 
+             WHEN RANDOM() < 0.5 THEN 'support@' 
+             WHEN RANDOM() < 0.75 THEN 'sales@' 
+             ELSE 'contact@' END, 
+        SUBSTR(MD5(RANDOM()), 1, 10), 
+        CASE WHEN RANDOM() > 0.5 THEN '.com' ELSE '.org' END
+    )) AS EMAIL,
+    CONCAT(
+        UNIFORM(100, 999, RANDOM()), ' ', 
+        CASE WHEN RANDOM() < 0.25 THEN 'Commerce Blvd' 
+             WHEN RANDOM() < 0.5 THEN 'Industrial Ave' 
+             WHEN RANDOM() < 0.75 THEN 'Enterprise St' 
+             ELSE 'Market Lane' END, ', ', 
+        CASE WHEN RANDOM() < 0.25 THEN 'Houston' 
+             WHEN RANDOM() < 0.5 THEN 'Phoenix' 
+             WHEN RANDOM() < 0.75 THEN 'Dallas' 
+             ELSE 'Seattle' END, ' ', 
+        SUBSTR(MD5(RANDOM()), 1, 2), ' ', 
+        UNIFORM(10000, 99999, RANDOM())
+    ) AS ADDRESS,
+    UNIFORM(1, 500, RANDOM()) AS TOTAL_ORDERS
 FROM TABLE(GENERATOR(ROWCOUNT => 100));
 
 CREATE OR REPLACE SECRET SKYFLOW_VAULT_SECRET
@@ -173,7 +228,7 @@ def GET_WORKSPACE_ID(auth_token):
     url = f"https://manage.skyflowapis.com/v1/workspaces"
     headers = {
         "Authorization": "Bearer " + auth_token,
-        "X-SKYFLOW-ACCOUNT-ID": "<TODO: ACCOUNT_ID>"
+        "X-SKYFLOW-ACCOUNT-ID": "<TODO: SKYFLOW_ACCOUNT_ID>"
     }
     response = http_session.get(url, headers=headers)
     workspace_response = sjson.loads(response.text)
@@ -361,33 +416,38 @@ def set_masking_policy(session, table_name, column_name, policy_name):
     session.sql(alter_column_sql).collect()
 
 
-def tokenize_table(session, vault_id, table_name, primary_key, pii_fields_delimited, vault_owner_email):  
+def tokenize_table(session, vault_name, table_name, primary_key, pii_fields_delimited, vault_owner_email):
     credentials = sjson.loads(_snowflake.get_generic_secret_string('cred'), strict=False)
     credentials_hashable = tuple(sorted(credentials.items()))
     auth_token = get_bearer_token(credentials_hashable)
 
-    if not re.match(r"^[a-z0-9]{32}$", vault_id):
-        vault_id = SKYFLOW_CREATE_VAULT(auth_token, vault_id, table_name, primary_key, pii_fields_delimited, vault_owner_email)
+    vault_id = GET_VAULT_ID_BY_NAME(auth_token, vault_name)
 
-    create_detokenize_udf(session, vault_id)
-        
-    skyflow_url = f"https://ebfc9bee4242.vault.skyflowapis.com/v1/vaults/{vault_id}/{table_name.lower()}"
-    headers = {"Authorization": "Bearer " + auth_token}
+    if vault_id:
+        table_exists = GET_TABLE_BY_NAME(auth_token, vault_id, table_name)
+        if not table_exists:
+            ADD_TABLE_TO_VAULT(auth_token, vault_id, table_name, primary_key, pii_fields_delimited)
+    else:
+        # Create a new vault if it doesn't exist
+        vault_id = SKYFLOW_CREATE_VAULT(auth_token, vault_name, table_name, primary_key, pii_fields_delimited, vault_owner_email)
+        create_detokenize_udf(session, vault_id)
 
     pii_fields = [field.strip().upper() for field in pii_fields_delimited.split(',')]
 
-    create_masking_policy(session, 'DETOKENIZE_COLUMN')
+    create_masking_policy(session, f"DETOKENIZE_COLUMN_{table_name}")
     for field in pii_fields:
-        set_masking_policy(session, table_name, field, 'DETOKENIZE_COLUMN')
+        set_masking_policy(session, table_name, field, f"DETOKENIZE_COLUMN_{table_name}")
 
     columns = [primary_key.upper()] + pii_fields
-
     df = session.table(table_name).select(columns)
 
     batch_size = 25
     tokens_list = []
 
     data = df.to_pandas()
+
+    skyflow_url = f"https://ebfc9bee4242.vault.skyflowapis.com/v1/vaults/{vault_id}/{table_name.lower()}"
+    headers = {"Authorization": "Bearer " + auth_token}
 
     for i in range(0, len(data), batch_size):
         batch = data.iloc[i:i + batch_size]
@@ -562,10 +622,40 @@ def SKYFLOW_CREATE_VAULT(auth_token, vault_name, table_name, primary_key, pii_fi
                 "tags": field_config["tags"],
                 "index": 0
             }
-            field_blocks.append(field_block)
         else:
-            print(f"No specific configuration found for field '{field}'. Skipping.")
-            pass  # Skip fields without specific configurations
+            # Use default configuration for fields without specific configurations
+            field_block = {
+                "name": field.lower(),
+                "datatype": "DT_STRING",
+                "isArray": False,
+                "tags": [
+                    {
+                        "name": "skyflow.options.default_dlp_policy",
+                        "values": ["REDACT"]
+                    },
+                    {
+                        "name": "skyflow.options.operation",
+                        "values": ["EXACT_MATCH"]
+                    },
+                    {
+                        "name": "skyflow.options.default_token_policy",
+                        "values": ["DETERMINISTIC_UUID"]
+                    },
+                    {
+                        "name": "skyflow.options.description",
+                        "values": ["String"]
+                    },
+                    {
+                        "name": "skyflow.options.display_name",
+                        "values": [field.lower()]
+                    }
+                ],
+                "properties": None,
+                "index": 0,
+                "ID": ""
+            }
+        field_blocks.append(field_block)
+
     
     # Build the body for the API request
     body = {
@@ -604,7 +694,7 @@ def SKYFLOW_CREATE_VAULT(auth_token, vault_name, table_name, primary_key, pii_fi
     url = "https://manage.skyflowapis.com/v1/vaults"
     headers = {
         "Authorization": "Bearer " + auth_token,
-        "X-SKYFLOW-ACCOUNT-ID": "<TODO: ACCOUNT_ID>"
+        "X-SKYFLOW-ACCOUNT-ID": "<TODO: SKYFLOW_ACCOUNT_ID>"
     }
     
     try:
@@ -622,13 +712,280 @@ def GET_USER_ID_BY_EMAIL(auth_token, user_email):
     url = f"https://manage.skyflowapis.com/v1/users?filterOps.email={encoded_email}"
     headers = {
         "Authorization": "Bearer " + auth_token,
-        "X-SKYFLOW-ACCOUNT-ID": "<TODO: ACCOUNT_ID>"
+        "X-SKYFLOW-ACCOUNT-ID": "<TODO: SKYFLOW_ACCOUNT_ID>"
     }
 
     response = http_session.get(url, headers=headers)
     user_response = sjson.loads(response.text)
     
     return user_response["users"][0]["ID"]   
+
+def GET_VAULT_ID_BY_NAME(auth_token, vault_name):
+    workspaceID = GET_WORKSPACE_ID(auth_token)
+    url = f"https://manage.skyflowapis.com/v1/vaults?filterOps.name={vault_name}&workspaceID={workspaceID}"
+    headers = {
+        "Authorization": "Bearer " + auth_token,
+        "X-SKYFLOW-ACCOUNT-ID": "<TODO: SKYFLOW_ACCOUNT_ID>"
+    }
+
+    response = http_session.get(url, headers=headers)
+    vault_response = sjson.loads(response.text)
+    
+    # Check if the "vaults" key exists and if it contains any entries
+    if "vaults" in vault_response and vault_response["vaults"]:
+        return vault_response["vaults"][0]["ID"]
+    else:
+        return None
+
+def GET_VAULT_DETAILS(auth_token, vault_id):
+    url = f"https://manage.skyflowapis.com/v1/vaults/{vault_id}"
+    headers = {
+        "Authorization": f"Bearer {auth_token}",
+        "X-SKYFLOW-ACCOUNT-ID": "<TODO: SKYFLOW_ACCOUNT_ID>"
+    }
+
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        vault_details = response.json()
+        return vault_details
+    except requests.exceptions.RequestException as e:
+        print(f"Failed to get vault details: {e}")
+        return None
+
+def GET_TABLE_BY_NAME(auth_token, vault_id, table_name):
+    vault_details = GET_VAULT_DETAILS(auth_token, vault_id)
+
+    if "vault" in vault_details:
+        vault_data = vault_details["vault"]
+        schemas = vault_data.get("schemas", [])
+        table_name_lower = table_name.lower()
+        for schema in schemas:
+            schema_name = schema.get("name", "").lower()
+            if schema_name == table_name_lower:
+                return True
+        return False
+    else:
+        return False
+
+def GET_VAULT_SCHEMA(auth_token, vault_id):
+    vault_details = GET_VAULT_DETAILS(auth_token, vault_id)
+    if vault_details and "vault" in vault_details:
+        vault_data = vault_details["vault"]
+        return vault_data.get("schemas", [])
+    else:
+        return None
+
+def UPDATE_VAULT_SCHEMA(vault_schema_current, table_name, primary_key, pii_fields_delimited):
+    # Split the comma-separated fields into a list
+    pii_fields = pii_fields_delimited.split(',')
+    
+    # Define a dictionary mapping field names to their configurations
+    field_configurations = {
+        'NAME': {
+            "datatype": "DT_STRING",
+            "tags": [
+                {"name": "skyflow.options.default_dlp_policy", "values": ["MASK"]},
+                {"name": "skyflow.options.find_pattern", "values": ["(.).*(.{2})"]},
+                {"name": "skyflow.options.replace_pattern", "values": ["${1}***${2}"]},
+                {"name": "skyflow.options.identifiability", "values": ["MODERATE_IDENTIFIABILITY"]},
+                {"name": "skyflow.options.operation", "values": ["EXACT_MATCH"]},
+                {"name": "skyflow.options.default_token_policy", "values": ["DETERMINISTIC_UUID"]},
+                {"name": "skyflow.options.configuration_tags", "values": ["NULLABLE"]},
+                {"name": "skyflow.options.personal_information_type", "values": ["PII", "PHI"]},
+                {"name": "skyflow.options.privacy_law", "values": ["GDPR", "CCPA", "HIPAA"]},
+                {"name": "skyflow.options.description", "values": ["An individual's first, middle, or last name"]},
+                {"name": "skyflow.options.display_name", "values": ["name"]}
+            ]
+        },
+        'EMAIL': {
+            "datatype": "DT_STRING",
+            "tags": [
+                {"name": "skyflow.options.default_dlp_policy", "values": ["MASK"]},
+                {"name": "skyflow.options.find_pattern", "values": ["^(.).*?(.)?@(.+)$"]},
+                {"name": "skyflow.options.replace_pattern", "values": ["$1******$2@$3"]},
+                {"name": "skyflow.options.identifiability", "values": ["HIGH_IDENTIFIABILITY"]},
+                {"name": "skyflow.options.operation", "values": ["EXACT_MATCH"]},
+                {"name": "skyflow.options.default_token_policy", "values": ["DETERMINISTIC_FPT"]},
+                {"name": "skyflow.options.format_preserving_regex", "values": ["^([a-z]{20})@([a-z]{10})\\.com$"]},
+                {"name": "skyflow.options.personal_information_type", "values": ["PII", "PHI"]},
+                {"name": "skyflow.options.privacy_law", "values": ["GDPR", "CCPA", "HIPAA"]},
+                {"name": "skyflow.options.data_type", "values": ["skyflow.Email"]},
+                {"name": "skyflow.options.description", "values": ["An email address"]},
+                {"name": "skyflow.options.display_name", "values": ["email"]}
+            ]
+                        },
+        'PHONE': {
+            "datatype": "DT_STRING",
+                            "tags": [
+                {"name": "skyflow.options.default_dlp_policy", "values": ["MASK"]},
+                {"name": "skyflow.options.find_pattern", "values": [".*([0-9]{4})"]},
+                {"name": "skyflow.options.replace_pattern", "values": ["XXXXXX${1}"]},
+                {"name": "skyflow.options.identifiability", "values": ["HIGH_IDENTIFIABILITY"]},
+                {"name": "skyflow.options.operation", "values": ["EXACT_MATCH"]},
+                {"name": "skyflow.options.default_token_policy", "values": ["DETERMINISTIC_FPT"]},
+                {"name": "skyflow.options.configuration_tags", "values": ["NULLABLE"]},
+                {"name": "skyflow.options.personal_information_type", "values": ["PII", "PHI"]},
+                {"name": "skyflow.options.privacy_law", "values": ["GDPR", "CCPA", "HIPAA"]},
+                {"name": "skyflow.options.description", "values": ["Details about a phone number"]},
+                {"name": "skyflow.options.display_name", "values": ["phone"]}
+            ]
+        },
+        'ADDRESS': {
+            "datatype": "DT_STRING",
+            "tags": [
+                {"name": "skyflow.options.default_dlp_policy", "values": ["MASK"]},
+                {"name": "skyflow.options.find_pattern", "values": ["(.).*(.{2})"]},
+                {"name": "skyflow.options.replace_pattern", "values": ["${1}***${2}"]},
+                {"name": "skyflow.options.identifiability", "values": ["HIGH_IDENTIFIABILITY"]},
+                {"name": "skyflow.options.operation", "values": ["EXACT_MATCH"]},
+                {"name": "skyflow.options.default_token_policy", "values": ["DETERMINISTIC_UUID"]},
+                {"name": "skyflow.options.configuration_tags", "values": ["NULLABLE"]},
+                {"name": "skyflow.options.personal_information_type", "values": ["PII", "PHI"]},
+                {"name": "skyflow.options.privacy_law", "values": ["GDPR", "CCPA", "HIPAA"]},
+                {"name": "skyflow.options.description", "values": ["A generic street address usually contains the house number and street name"]},
+                {"name": "skyflow.options.display_name", "values": ["address"]}
+            ]
+        }
+        # Add configurations for other fields as needed
+    }
+    
+    # Initialize a list with skyflow_id and primary_key to start
+    field_blocks = [
+        {
+            "name": "skyflow_id",
+            "datatype": "DT_STRING",
+            "isArray": False,
+                            "tags": [
+                {"name": "skyflow.options.default_dlp_policy", "values": ["PLAIN_TEXT"]},
+                {"name": "skyflow.options.operation", "values": ["ALL_OP"]},
+                {"name": "skyflow.options.sensitivity", "values": ["LOW"]},
+                {"name": "skyflow.options.data_type", "values": ["skyflow.SkyflowID"]},
+                {"name": "skyflow.options.description", "values": ["Skyflow defined Primary Key"]},
+                {"name": "skyflow.options.display_name", "values": ["Skyflow ID"]}
+                            ],
+                            "index": 0
+        },
+        {
+            "name": primary_key.lower(),
+            "datatype": "DT_INT32",
+            "isArray": False,
+            "tags": [
+                {"name": "skyflow.options.default_dlp_policy", "values": ["PLAIN_TEXT"]},
+                {"name": "skyflow.options.operation", "values": ["ALL_OP"]},
+                {"name": "skyflow.options.unique", "values": ["true"]},
+                {"name": "skyflow.options.display_name", "values": [primary_key.lower()]}
+            ],
+            "index": 0
+        }
+    ]
+    
+    # Loop over each field in the pii_fields list and create a field block
+    for field in pii_fields:
+        field = field.strip()  # Remove any leading/trailing whitespace
+        field_upper = field.upper()
+        field_config = field_configurations.get(field_upper)
+        
+        if field_config:
+            field_block = {
+                "name": field.lower(),
+                "datatype": field_config["datatype"],
+                "isArray": False,
+                "tags": field_config["tags"],
+                "index": 0,
+                "properties": None,
+                "ID": ""
+            }
+        else:
+            # Use default configuration for fields without specific configurations
+            field_block = {
+                "name": field.lower(),
+                "datatype": "DT_STRING",
+                "isArray": False,
+                "tags": [
+                    {
+                        "name": "skyflow.options.default_dlp_policy",
+                        "values": ["REDACT"]
+                    },
+                    {
+                        "name": "skyflow.options.operation",
+                        "values": ["EXACT_MATCH"]
+                    },
+                    {
+                        "name": "skyflow.options.default_token_policy",
+                        "values": ["DETERMINISTIC_UUID"]
+                    },
+                    {
+                        "name": "skyflow.options.description",
+                        "values": ["String"]
+                    },
+                    {
+                        "name": "skyflow.options.display_name",
+                        "values": [field.lower()]
+                    }
+                ],
+                "properties": None,
+                "index": 0,
+                "ID": ""
+            }
+        field_blocks.append(field_block)
+    
+    # Create the new table schema
+    new_table_schema = {
+        "name": table_name,
+        "parentSchemaProperties": None,
+        "fields": field_blocks,
+        "childrenSchemas": [],
+        "schemaTags": [],
+        "properties": None,
+        "ID": ""
+    }
+    
+    # Add the new table to the existing vault schema
+    vault_schema_current.append(new_table_schema)
+    
+    # Return the updated list of schemas
+    return vault_schema_current
+
+def ADD_TABLE_TO_VAULT(auth_token, vault_id, table_name, primary_key, pii_fields_delimited):
+    # Get current vault schema
+    vault_schema_current = GET_VAULT_SCHEMA(auth_token, vault_id)
+    if not vault_schema_current:
+        raise Exception(f"Failed to retrieve current schema for vault '{vault_id}'.")
+    
+    # Update the vault schema by adding the new table
+    vault_schema_new = UPDATE_VAULT_SCHEMA(vault_schema_current, table_name, primary_key, pii_fields_delimited)
+        
+    # Retrieve current vault details to include necessary fields
+    vault_details = GET_VAULT_DETAILS(auth_token, vault_id)
+    if not vault_details or 'vault' not in vault_details:
+        raise Exception(f"Vault with ID '{vault_id}' not found.")
+    vault_info = vault_details['vault']
+
+    # Build the body for the PATCH request
+    body = {
+        "vaultSchema": {
+            "schemas": vault_schema_new  # Use the updated list of schemas
+        }
+    }
+
+    # Define the PATCH request URL and headers
+    url = f"https://manage.skyflowapis.com/v1/vaults/{vault_id}"
+    headers = {
+        "Authorization": f"Bearer {auth_token}",
+        "Content-Type": "application/json",
+        "X-SKYFLOW-ACCOUNT-ID": "<TODO: SKYFLOW_ACCOUNT_ID>"  # Replace with actual account ID
+    }
+
+    # Make the PATCH request
+    try:
+        response = requests.patch(url, headers=headers, json=body)
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"Failed to patch vault: {e}")
+
+    vault_response = response.json()
+    return vault_response
 
 def create_snowflake_stream(session, vault_id, table_name, primary_key, pii_fields_delimited):
     # Retrieve the current warehouse from the session
@@ -768,7 +1125,7 @@ def SKYFLOW_PROCESS_PII(session, vault_id, table_name, primary_key, pii_fields):
 
     # Skyflow static variables
     table_name_skyflow = table_name.lower()
-    skyflow_account_id = "<TODO: ACCOUNT_ID>"
+    skyflow_account_id = "<TODO: SKYFLOW_ACCOUNT_ID>"
     skyflow_url_vault = f"https://ebfc9bee4242.vault.skyflowapis.com/v1/vaults/{vault_id}/"
 
     # Retrieve all stream records
@@ -915,10 +1272,14 @@ GRANT USAGE ON SCHEMA SKYFLOW_DEMO.PUBLIC TO ROLE ROLE_AUDIT_ADMIN;
 GRANT USAGE ON SCHEMA SKYFLOW_DEMO.PUBLIC TO ROLE ROLE_DATA_ENGINEER;
 GRANT USAGE ON SCHEMA SKYFLOW_DEMO.PUBLIC TO ROLE ROLE_MARKETING;
 
--- Grant access to table SKYFLOW_DEMO.PUBLIC.CUSTOMERS to roles
+-- Grant access to tables SKYFLOW_DEMO.PUBLIC.CUSTOMERS and SKYFLOW_DEMO.PUBLIC.SUPPLIERS to roles
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE SKYFLOW_DEMO.PUBLIC.CUSTOMERS TO ROLE ROLE_AUDIT_ADMIN;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE SKYFLOW_DEMO.PUBLIC.CUSTOMERS TO ROLE ROLE_DATA_ENGINEER;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE SKYFLOW_DEMO.PUBLIC.CUSTOMERS TO ROLE ROLE_MARKETING;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE SKYFLOW_DEMO.PUBLIC.SUPPLIERS TO ROLE ROLE_AUDIT_ADMIN;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE SKYFLOW_DEMO.PUBLIC.SUPPLIERS TO ROLE ROLE_DATA_ENGINEER;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE SKYFLOW_DEMO.PUBLIC.SUPPLIERS TO ROLE ROLE_MARKETING;
 
 CREATE OR REPLACE PROCEDURE GRANT_WAREHOUSE_ACCESS(role_name STRING)
 RETURNS STRING
