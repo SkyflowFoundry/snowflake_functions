@@ -1055,59 +1055,28 @@ def retry(attempts, delay, multiplier, callback):
         "Max retries exceeded. Error occurred generating bearer token")
 
 @cached(cache)
-def get_signed_jwt(credentials):
-    try:
-        # Create the claims object with the data in the creds object
-        claims = {
-            "iss": credentials["clientID"],
-            "key": credentials["keyID"], 
-            "aud": credentials["tokenURI"], 
-            # JWT expires in Now + 60 minutes
-            "exp": int(time.time()) + (3600),
-            "sub": credentials["clientID"], 
-        }
-        # Sign the claims object with the private key contained in the creds
-        # object
-        signedJWT = jwt.encode(
-            claims,
-            credentials["privateKey"],
-            algorithm='RS256')
-
-        return signedJWT
-
-    except Exception:
-        raise Exception("Unexpected error during JWT creation")
-
-@cached(cache)
 def get_bearer_token(credentials_hashable):
     try:
         credentials = dict(credentials_hashable)
-
         claims = {
             "iss": credentials["clientID"],
             "key": credentials["keyID"], 
             "aud": credentials["tokenURI"], 
-            "exp": int(time.time()) + 3600,  # JWT expires in Now + 60 minutes
+            "exp": int(time.time()) + 3600,
             "sub": credentials["clientID"], 
         }
-        
         signed_jwt = jwt.encode(claims, credentials["privateKey"], algorithm='RS256')
-        
-        # Request body parameters
         body = {
             'grant_type': 'urn:ietf:params:oauth:grant-type:jwt-bearer',
             'assertion': signed_jwt,
         }
-
         token_uri = credentials["tokenURI"]
-
         response = http_session.post(url=token_uri, json=body)
         response.raise_for_status()
         auth = sjson.loads(response.text)
         return auth["accessToken"]
-
-    except Exception:
-        return None
+    except Exception as e:
+        raise Exception(f"Error generating bearer token: {e}")
 
 @cached(cache)
 def get_secret(secret_name):
@@ -1121,139 +1090,236 @@ def SKYFLOW_PROCESS_PII(session, vault_id, table_name, primary_key, pii_fields):
     # Convert primary_key and pii_fields to uppercase
     primary_key = primary_key.upper()
     pii_fields_list = [field.strip().upper() for field in pii_fields.split(',')]
-    pii_fields_list.append(primary_key)
+    all_fields = [primary_key] + pii_fields_list
 
-    # Skyflow static variables
+    # Skyflow variables
     table_name_skyflow = table_name.lower()
     skyflow_account_id = "<TODO: SKYFLOW_ACCOUNT_ID>"
     skyflow_url_vault = f"https://ebfc9bee4242.vault.skyflowapis.com/v1/vaults/{vault_id}/"
 
     # Retrieve all stream records
-    stream_records = session.sql(f"SELECT {primary_key}, METADATA$ACTION, {', '.join(pii_fields_list)} FROM SKYFLOW_PII_STREAM_{table_name}").collect()
+    stream_query = f"""
+        SELECT {', '.join(all_fields)}, 
+               METADATA$ACTION, 
+               METADATA$ISUPDATE, 
+               METADATA$ROW_ID
+        FROM SKYFLOW_PII_STREAM_{table_name}
+    """
+    stream_records = session.sql(stream_query).collect()
 
-    # Initialize lists for different actions
-    primary_keys_to_delete = []
-    records_to_insert = []
+    # Group records by METADATA$ROW_ID to identify UPDATE pairs
+    update_pairs = {}
+    deletes = []
+    inserts = []
 
-    # Iterate through records to determine the action
     for record in stream_records:
         action = record['METADATA$ACTION']
-        primary_key_value = record[primary_key]
-        if action == 'DELETE':
-            primary_keys_to_delete.append(primary_key_value)
-        elif action == 'INSERT':
-            records_to_insert.append(record)
+        is_update = record['METADATA$ISUPDATE']
+        row_id = record['METADATA$ROW_ID']
 
-    # Process DELETE actions
-    if primary_keys_to_delete:
-        # Make a single GET request to obtain all skyflow_ids
-        response = http_session.get(
-            skyflow_url_vault + table_name_skyflow,
-            headers={
-                'Accept': 'application/json',
-                'X-SKYFLOW-ACCOUNT-ID': skyflow_account_id,
-                'Authorization': f'Bearer {auth_token}'
-            },
-            params={
-                'column_name': primary_key.lower(),
-                'column_values': primary_keys_to_delete,
-                'fields': 'skyflow_id',
-                'redaction': 'PLAIN_TEXT'
-            }
-        )
-        response.raise_for_status()
-        skyflow_ids_to_delete = [record['fields']['skyflow_id'] for record in response.json()['records']]
+        if is_update:
+            if row_id not in update_pairs:
+                update_pairs[row_id] = {}
+            update_pairs[row_id][action] = record
+        else:
+            if action == 'DELETE':
+                deletes.append(record)
+            elif action == 'INSERT':
+                inserts.append(record)
 
-        # Make a single DELETE request to Skyflow
-        delete_response = requests.delete(
-            skyflow_url_vault + table_name_skyflow,
-            headers={
-                'Content-Type': 'application/json',
-                'Accept': 'application/json',
-                'X-SKYFLOW-ACCOUNT-ID': skyflow_account_id,
-                'Authorization': f'Bearer {auth_token}'
-            },
-            json={
-                'skyflow_ids': skyflow_ids_to_delete
-            }
-        )
-        delete_response.raise_for_status()
+    # Function to get skyflow_id by primary key
+    def get_skyflow_id_by_primary_key(primary_key_values):
+        # primary_key_values should be a list of primary key values
+        get_url = f"{skyflow_url_vault}{table_name_skyflow}"
+        headers = {
+            'Authorization': f'Bearer {auth_token}',
+            'Accept': 'application/json',
+            'X-SKYFLOW-ACCOUNT-ID': '<TODO: SKYFLOW_ACCOUNT_ID>'
+        }
+        # Construct params as a list of tuples to allow repeated keys
+        params = [
+            ('redaction', 'PLAIN_TEXT'),
+            ('fields', 'skyflow_id'),
+            ('fields', primary_key.lower()),
+            ('column_name', primary_key.lower())
+        ]
+        for value in primary_key_values:
+            params.append(('column_values', str(value)))
+        response = http_session.get(get_url, headers=headers, params=params)
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            print(f"Error getting records from Skyflow: {e}, Response: {response.text}")
+            raise
+        response_json = response.json()
+        records = response_json.get('records', [])
+        # Map primary key values to skyflow_ids
+        primary_key_to_skyflow_id = {}
+        for record in records:
+            fields = record.get('fields', {})
+            skyflow_id = fields.get('skyflow_id')
+            primary_key_value = fields.get(primary_key.lower())
+            if skyflow_id and primary_key_value is not None:
+                primary_key_to_skyflow_id[str(primary_key_value)] = skyflow_id
+        return primary_key_to_skyflow_id
 
-    # Process INSERT actions
-    if records_to_insert: 
+    # Process DELETE operations
+    if deletes:
+        delete_ids = [record[primary_key] for record in deletes]
+        # Get skyflow_ids for deletion
+        primary_key_to_skyflow_id = get_skyflow_id_by_primary_key(delete_ids)
+        skyflow_ids = list(primary_key_to_skyflow_id.values())
+        if skyflow_ids:
+            delete_url = skyflow_url_vault + table_name_skyflow
+            delete_response = http_session.delete(
+                delete_url,
+                headers={
+                    'Authorization': f'Bearer {auth_token}',
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-SKYFLOW-ACCOUNT-ID': '<TODO: SKYFLOW_ACCOUNT_ID>'
+                },
+                json={'skyflow_ids': skyflow_ids}
+            )
+            delete_response.raise_for_status()
+        else:
+            print(f"No Skyflow IDs found for deletion. Primary keys: {delete_ids}")
+
+    # Process UPDATE operations
+    if update_pairs:
+        update_primary_keys = [actions['INSERT'][primary_key] for actions in update_pairs.values() if 'INSERT' in actions]
+        # Get skyflow_ids for updates
+        primary_key_to_skyflow_id = get_skyflow_id_by_primary_key(update_primary_keys)
+        for row_id, actions in update_pairs.items():
+            old_record = actions.get('DELETE')
+            new_record = actions.get('INSERT')
+    
+            if old_record and new_record:
+                # Get the primary key value
+                primary_key_value = new_record[primary_key]
+    
+                # Compare old and new values to identify changed fields
+                changed_fields = {}
+                for field in pii_fields_list:
+                    old_value = old_record[field]
+                    new_value = new_record[field]
+                    if old_value != new_value:
+                        changed_fields[field.lower()] = new_value
+    
+                if changed_fields:
+                    print(f"Changed fields for primary key {primary_key_value}: {changed_fields}")
+                    skyflow_id = primary_key_to_skyflow_id.get(str(primary_key_value))
+                    if skyflow_id:
+                        # Use the Skyflow Update Record API
+                        update_url = skyflow_url_vault + f"{table_name_skyflow}/{skyflow_id}"
+                        headers = {
+                            'Authorization': f'Bearer {auth_token}',
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json',
+                            'X-SKYFLOW-ACCOUNT-ID': '<TODO: SKYFLOW_ACCOUNT_ID>'
+                        }
+                        body = {
+                            'record': {
+                                'fields': changed_fields
+                            },
+                            'tokenization': True
+                        }
+                        response = http_session.put(update_url, json=body, headers=headers)
+                        try:
+                            response.raise_for_status()
+                        except Exception as e:
+                            print(f"Error updating Skyflow record: {e}, Response: {response.text}")
+                            continue
+                        response_json = response.json()
+                        print(f"Skyflow Update Response for primary key {primary_key_value}: {response_json}")
+    
+                        # Get the new tokens from the response
+                        tokens = response_json.get('tokens', {})
+                        if not tokens:
+                            print(f"No tokens received for primary key {primary_key_value}. Response: {response_json}")
+                            continue
+                        print(f"Tokens received: {tokens}")
+    
+                        # Escape tokens values
+                        def escape_sql_value(value):
+                            if isinstance(value, str):
+                                return value.replace("'", "''")  # Escape single quotes
+                            return value
+    
+                        # Update the Snowflake table with the new tokens
+                        set_clause = ', '.join([f'"{field.upper()}" = \'{escape_sql_value(tokens[field.lower()])}\''
+                                                for field in tokens.keys()])
+                        # Handle primary key value quoting
+                        if isinstance(primary_key_value, str):
+                            primary_key_value_formatted = f"'{primary_key_value}'"
+                        else:
+                            primary_key_value_formatted = str(primary_key_value)
+    
+                        update_sql = f"""
+                            UPDATE "{table_name}"
+                            SET {set_clause}
+                            WHERE "{primary_key}" = {primary_key_value_formatted}
+                        """
+                        print(f"Executing SQL: {update_sql}")
+                        try:
+                            session.sql(update_sql).collect()
+                        except Exception as e:
+                            print(f"Error executing UPDATE statement: {e}")
+                    else:
+                        print(f"Skyflow ID not found for primary key: {primary_key_value}")
+                else:
+                    # No fields have changed, so no action is needed
+                    pass
+
+    # Process INSERT operations
+    if inserts:
         batch_size = 25
-        # Split records into batches of 25
-        batches = [records_to_insert[i:i + batch_size] for i in range(0, len(records_to_insert), batch_size)]
-
-        # Initialize dictionaries to store CASE expressions for each field
-        case_expressions = {column: [] for column in pii_fields_list}
-        update_ids = []
-
-        # Define a function to execute the update statement
-        def execute_update(sql_command, update_ids_subset):
-            # Construct the final UPDATE statement with CASE expressions for each field
-            sql_command += f" WHERE {primary_key} IN ({', '.join(update_ids_subset)})"
-            # Execute the UPDATE statement
-            session.sql(sql_command).collect()
-
-        for batch_index, batch in enumerate(batches):
+        for i in range(0, len(inserts), batch_size):
+            batch = inserts[i:i + batch_size]
             records = []
-            for row_index, row in enumerate(batch):
-                # Construct the record with the specific fields
-                record = {
-                    "fields": {
-                        column: row[column.upper()] if column.upper() in row else None for column in pii_fields_list
-                    }
+
+            for record in batch:
+                # Prepare fields for tokenization
+                fields = {
+                    primary_key.lower(): record[primary_key]
                 }
-                records.append(record)
-                # Add the plaintext primary_key to the list for WHERE clause matching
-                update_ids.append(str(row[primary_key]))
-            
-            body = {
-                "records": records,
-                "tokenization": True
-            }
+                for field in pii_fields_list:
+                    value = record[field]
+                    fields[field.lower()] = value
 
-            url = skyflow_url_vault + table_name_skyflow
-            headers = {
-                "Authorization": "Bearer " + auth_token
-            }
-            
-            response = http_session.post(url, json=body, headers=headers)
-            response_as_json = response.json()
-            
-            # Check if 'records' key exists in the response
-            if "records" in response_as_json:
-                # Construct the CASE expressions for each field using update_ids
-                for i, record in enumerate(response_as_json["records"]):
-                    # Use the index to find the corresponding primary_key from update_ids
-                    id_index = batch_index * batch_size + i
-                    primary_key_value = update_ids[id_index]
-                    for field, token in record["tokens"].items():
-                        field = field.upper()
-                        case_expression = f"WHEN '{primary_key_value}' THEN '{token}'"
-                        case_expressions[field].append(case_expression)
-                        
-                        # Check if the limit is reached, then execute the update
-                        if len(case_expressions[field]) >= 10000:  # Set to one less than the limit to account for the current expression
-                            sql_command = f"UPDATE {table_name} SET {field} = CASE {primary_key} {' '.join(case_expressions[field])} END"
-                            execute_update(sql_command, update_ids[:10000])
-                            # Reset the expressions and primary_key values for the next batch
-                            case_expressions[field] = case_expressions[field][10000:]
-                            update_ids = update_ids[10000:]
-            else:
-                print("Key 'records' not found in the response.")
-                return "Key 'records' not found in the response."
+                records.append({'fields': fields})
 
-        # Execute any remaining updates
-        for field in case_expressions:
-            if case_expressions[field]:
-                sql_command = f"UPDATE {table_name} SET {field} = CASE {primary_key} {' '.join(case_expressions[field])} END"
-                execute_update(sql_command, update_ids)
+            # Tokenize batch
+            response = http_session.post(
+                skyflow_url_vault + table_name_skyflow,
+                headers={
+                    'Authorization': f'Bearer {auth_token}',
+                    'Content-Type': 'application/json'
+                },
+                json={
+                    'records': records,
+                    'tokenization': True
+                }
+            )
+            response.raise_for_status()
+            response_json = response.json()
 
-    # Refresh the stream for future processing
-    session.sql(f'CREATE OR REPLACE STREAM SKYFLOW_PII_STREAM_{table_name} ON TABLE SKYFLOW_DEMO.PUBLIC.{table_name}').collect()
-    return "Changes processed"
+            # Update Snowflake table with tokens
+            for idx, record_response in enumerate(response_json['records']):
+                tokens = record_response.get('tokens', {})
+                record_id = batch[idx][primary_key]
+                set_clause = ', '.join([f'"{field.upper()}" = \'{tokens[field.lower()]}\''
+                                        for field in tokens.keys()])
+                update_sql = f"""
+                    UPDATE "{table_name}"
+                    SET {set_clause}
+                    WHERE "{primary_key}" = {record_id}
+                """
+                session.sql(update_sql).collect()
+
+    # Refresh the stream
+    session.sql(f'CREATE OR REPLACE STREAM SKYFLOW_PII_STREAM_{table_name} ON TABLE "{table_name}"').collect()
+    return "Changes processed successfully"
 
 $$;
 
