@@ -66,6 +66,12 @@ INSERT INTO CUSTOMERS (NAME, EMAIL, PHONE, ADDRESS, LIFETIME_PURCHASE_AMOUNT, CU
     ('John Smith', 'john@example.com', '555-222-5555', '123 Fake Street NY NY 10019', 5000, '2020-01-01'),
     ('Harry Truman', 'harry@example.com', '555-333-5555', '234 Fake Street NY NY 10019', 6000, '2023-01-01'),
     ('Sally Field', 'sally@example.com', '555-444-5555', '345 Fake Street NY NY 10019', 99, '2022-01-01');
+UPDATE CUSTOMERS
+SET EMAIL = 'new_email@example.com',
+    NAME = 'David Beckham',
+    ADDRESS = '123 Fake Street',
+    CUSTOMER_SINCE = '2000-10-17'
+WHERE CUSTOMER_ID = '3';
 
 -- Step 8: Check on data in snowflake table
 SELECT * FROM CUSTOMERS;
