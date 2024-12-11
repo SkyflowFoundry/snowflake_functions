@@ -17,7 +17,7 @@ SELECT tokenize_table('customers', 'email,name,phone');
 
 SELECT * FROM customers;
 
-SELECT name, SKYFLOW_DETOKENIZE((email)) FROM customers;
+SELECT name, SKYFLOW_DETOKENIZE(email) FROM customers;
 
 -- Step 2: Test UPDATE functionality
 UPDATE customers 
