@@ -13,9 +13,11 @@ INSERT INTO customers (
 
 -- View tokenized customer data
 
-SELECT tokenize_table('customers', 'email,phone');
+SELECT tokenize_table('customers', 'email,name,phone');
 
 SELECT * FROM customers;
+
+SELECT name, SKYFLOW_DETOKENIZE((email)) FROM customers;
 
 -- Step 2: Test UPDATE functionality
 UPDATE customers 
@@ -23,7 +25,7 @@ SET
     email = 'john.smith@newdomain.com',
     phone = '555-999-8888',
     address = '999 Updated Street NY NY 10019'
-WHERE customer_id = 1;
+WHERE customer_id = 1 OR customer_id = 2;
 
 -- View updated customer data
 SELECT * FROM customers WHERE customer_id = 1;

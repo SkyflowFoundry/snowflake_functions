@@ -116,6 +116,46 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+CREATE OR REPLACE FUNCTION SKYFLOW_DETOKENIZE(token_value text)
+RETURNS text AS $$
+DECLARE
+    response jsonb;
+    detokenize_params jsonb;
+BEGIN
+    -- If token_value is NULL, return NULL immediately
+    IF token_value IS NULL THEN
+        RETURN NULL;
+    END IF;
+
+    -- Build detokenization parameters
+    detokenize_params := jsonb_build_object(
+        'detokenizationParameters', 
+        jsonb_build_array(
+            jsonb_build_object(
+                'token', token_value,
+                'redaction', 'PLAIN_TEXT'
+            )
+        )
+    );
+
+    -- Call Skyflow API for detokenization
+    SELECT content::jsonb INTO response
+    FROM http((
+        'POST',
+        'https://ebfc9bee4242.vault.skyflowapis.com/v1/vaults/nfb4008c34e84c42af2a13aecf1f4e85/detokenize',
+        ARRAY[
+            http_header('Authorization', 'Bearer sky-df675-f9b64918a87b4b38ad7f11680bb5c7cc'),
+            http_header('Content-Type', 'application/json')
+        ],
+        'application/json',
+        detokenize_params::text
+    )::http_request);
+
+    -- Extract and return the detokenized value
+    RETURN response->'records'->0->>'value';
+END;
+$$ LANGUAGE plpgsql;
+
 -- Create or replace the trigger function for the given table
 -- Note: The trigger will be created by tokenize_table at the end.
 
