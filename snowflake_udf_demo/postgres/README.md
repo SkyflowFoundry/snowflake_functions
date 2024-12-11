@@ -2,6 +2,13 @@
 
 A simple demonstration of using Skyflow's tokenization with PostgreSQL using BEFORE INSERT/UPDATE triggers.
 
+## Features
+- Automatic tokenization of PII data (name, email, phone, address) on insert/update
+- Detokenization support using SKYFLOW_DETOKENIZE function
+- Demonstrates both single row and batch operations
+- Uses PostgreSQL's trigger system for seamless integration
+- Direct HTTP requests to Skyflow API using PostgreSQL's HTTP extension
+
 ## Files
 * `postgres_setup.sql` - Creates the customers table and sets up the tokenization trigger
 * `postgres_demo.sql` - Demonstrates the tokenization functionality with sample data
@@ -29,10 +36,7 @@ export PATH="/opt/homebrew/opt/postgresql@17/bin:$PATH"
 source ~/.zshrc  # or source ~/.bash_profile
 ```
 
-3. Run the demo:
-```bash
-psql -d skyflow_demo -f postgres_demo.sql
-```
+3. Run the demo: Follow steps in `postgres_demo.sql` as needed.
 
 4. To remove everything when done:
 ```bash
@@ -83,6 +87,7 @@ psql -d skyflow_demo -f postgres_setup.sql
 
 ## Features
 - Automatic tokenization of PII data (name, email, phone, address) on insert/update
+- Detokenization support using SKYFLOW_DETOKENIZE function
 - Demonstrates both single row and batch operations
 - Uses PostgreSQL's trigger system for seamless integration
 - Direct HTTP requests to Skyflow API using PostgreSQL's HTTP extension
@@ -108,6 +113,10 @@ INSERT INTO customers (
 
 -- Query the data to see tokenized values
 SELECT * FROM customers;
+
+-- Query with detokenization
+SELECT SKYFLOW_DETOKENIZE(name), SKYFLOW_DETOKENIZE(email), customer_since 
+FROM customers;
 ```
 
 ## Requirements
@@ -122,6 +131,9 @@ SELECT * FROM customers;
 
 # Destroy environment
 ./setup.sh destroy
+
+# Recreate environment
+./setup.sh recreate
 
 # Show usage
 ./setup.sh
