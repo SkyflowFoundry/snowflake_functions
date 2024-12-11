@@ -12,6 +12,9 @@ INSERT INTO customers (
     ('Sally Field', 'sally@example.com', '555-444-5555', '345 Fake Street NY NY 10019', 9900000, '2022-01-01');
 
 -- View tokenized customer data
+
+SELECT tokenize_table('customers', 'email,phone');
+
 SELECT * FROM customers;
 
 -- Step 2: Test UPDATE functionality
