@@ -1,6 +1,3 @@
--- Step 0: Set search_path
-SET search_path TO public;
-
 -- Step 1: Insert sample customer data
 INSERT INTO customers (
     name, 
@@ -23,10 +20,10 @@ SET
     email = 'john.smith@newdomain.com',
     phone = '555-999-8888',
     address = '999 Updated Street NY NY 10019'
-WHERE name LIKE '%John%';
+WHERE customer_id = 1;
 
 -- View updated customer data
-SELECT * FROM customers WHERE name LIKE '%John%';
+SELECT * FROM customers WHERE customer_id = 1;
 
 -- Step 3: Test batch insert
 INSERT INTO customers (
@@ -44,7 +41,7 @@ SELECT
     generate_series || ' Batch Street, NY NY 10019' as address,
     (random() * 10000)::numeric(10,2) as lifetime_purchase_amount,
     (current_date - (random() * 365)::integer) as customer_since
-FROM generate_series(1, 5);
+FROM generate_series(1, 50);
 
 -- View all customer data
 SELECT * FROM customers ORDER BY customer_id;
