@@ -10,9 +10,9 @@ INSERT INTO customers (
     lifetime_purchase_amount, 
     customer_since
 ) VALUES 
-    ('John Smith', 'john@example.com', '555-222-5555', '123 Fake Street NY NY 10019', 5000, '2020-01-01'),
-    ('Harry Truman', 'harry@example.com', '555-333-5555', '234 Fake Street NY NY 10019', 6000, '2023-01-01'),
-    ('Sally Field', 'sally@example.com', '555-444-5555', '345 Fake Street NY NY 10019', 99, '2022-01-01');
+    ('John Smith', 'john@example.com', '555-222-5555', '123 Fake Street NY NY 10019', 5000000, '2020-01-01'),
+    ('Harry Truman', 'harry@example.com', '555-333-5555', '234 Fake Street NY NY 10019', 6000000, '2023-01-01'),
+    ('Sally Field', 'sally@example.com', '555-444-5555', '345 Fake Street NY NY 10019', 9900000, '2022-01-01');
 
 -- View tokenized customer data
 SELECT * FROM customers;
