@@ -11,3 +11,4 @@ All code contained in this repo is offered as sample code without warranty.
 - Snowflake Native App, Search Function
   - `snowflake_native_app_ilike`
 - Snowflake Demo
+  - `snowflake_native_app_ilike`
