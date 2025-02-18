@@ -6,6 +6,8 @@ All code contained in this repo is offered as sample code without warranty.
 
 ## Functions
 
-- Snowflake Native App: Detokenize Function
-- Snowflake Native App: Search Function
-- Snowflake External Function
+- Snowflake Native App, Detokenize Function
+  - `snowflake_native_app_detokenization`
+- Snowflake Native App, Search Function
+  - `snowflake_native_app_ilike`
+- Snowflake Demo
